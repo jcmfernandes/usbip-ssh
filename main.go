@@ -151,9 +151,5 @@ func main() {
 }
 
 // XXX stubs, replaced by later tasks
-func runAttach(host, pattern string, o attachOpts) (int, error) {
-	return 0, fmt.Errorf("not implemented")
-}
-func remoteSimple(host string, ra remoteArgs) int  { fatalf("not implemented"); return 1 }
 func keepCmd(host, pattern string, o attachOpts)   { fatalf("not implemented") }
 func daemonCmd(host, pattern string, o attachOpts) { fatalf("not implemented") }
