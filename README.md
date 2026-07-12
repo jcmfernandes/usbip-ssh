@@ -1,5 +1,8 @@
 # usbip-ssh
 
+> [!IMPORTANT]  
+> This repository is a **hard fork** of https://github.com/turistu/usbip-ssh. I used an LLM to rewrite the original program in golang.
+
 Attach USB devices from a remote Linux machine as if they were plugged
 into the local one, using the kernel's USB/IP drivers and an ssh
 connection. It does not use the USB/IP project's userland tools, opens no
