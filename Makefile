@@ -41,9 +41,12 @@ install: dist/usbip-ssh_$(shell $(GO) env GOHOSTARCH)
 test: payloads
 > CGO_ENABLED=0 $(GO) test ./...
 
+e2e: all
+> CGO_ENABLED=0 $(GO) test -tags e2e -count=1 -timeout 10m -v ./e2e/
+
 clean:
 > rm -rf dist embed
 
 force:
 
-.PHONY: all payloads install test clean force
+.PHONY: all payloads install test e2e clean force
