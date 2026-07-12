@@ -19,7 +19,7 @@ install: dist/usbip-ssh_$(shell $(GO) env GOHOSTARCH)
 	install -D -m 755 $< $(DESTDIR)$(PREFIX)/bin/usbip-ssh
 
 test: payloads
-	$(GO) test ./...
+	CGO_ENABLED=0 $(GO) test ./...
 
 clean:
 	rm -rf dist embed
