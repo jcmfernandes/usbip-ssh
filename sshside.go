@@ -97,11 +97,16 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 		}
 	}()
 	s := &remoteSession{cmd: cmd, in: in, pr: pr, out: bufio.NewScanner(pr)}
+	var chatter []string
 	for s.out.Scan() {
 		line := s.out.Text()
 		arch, ok := strings.CutPrefix(line, "-Arch ")
 		if !ok {
 			copyOutput(line)
+			if len(chatter) == 5 {
+				chatter = chatter[1:]
+			}
+			chatter = append(chatter, line)
 			continue
 		}
 		payload := payloadFor(strings.TrimSpace(arch))
@@ -134,7 +139,11 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 		return nil, fmt.Errorf("reading remote output: %w", err)
 	}
 	cmd.Wait()
-	return nil, errors.New("remote bootstrap failed (no -Arch line)")
+	msg := "remote bootstrap failed (no -Arch line)"
+	if len(chatter) > 0 {
+		msg += ":\n    " + strings.Join(chatter, "\n    ")
+	}
+	return nil, errors.New(msg)
 }
 
 // runAttach performs one attach session against host and returns ssh's
