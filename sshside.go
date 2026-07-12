@@ -90,6 +90,12 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 		return nil, err
 	}
 	pw.Close()
+	handshake := false
+	defer func() {
+		if !handshake {
+			pr.Close()
+		}
+	}()
 	s := &remoteSession{cmd: cmd, in: in, pr: pr, out: bufio.NewScanner(pr)}
 	for s.out.Scan() {
 		line := s.out.Text()
@@ -119,6 +125,7 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 			cmd.Wait()
 			return nil, fmt.Errorf("shipping payload: %w", err)
 		}
+		handshake = true
 		return s, nil
 	}
 	if err := s.out.Err(); err != nil {
