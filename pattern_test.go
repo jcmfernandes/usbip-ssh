@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-const specKbd = "1-1.4  03f0:e111  001/004  ABC123 HP Keyboard\t030102 030102"
+const specKbd = "1-1.4  03f0:e111  001/004  ABC123 HP Keyboard\t030101 030102"
 
 func TestMkDevPattern(t *testing.T) {
 	cases := []struct {
