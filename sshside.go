@@ -26,6 +26,7 @@ const bootstrap = `sh -c 'p=$(mktemp) && printf "%s\n" "-Arch $(uname -m)" && re
 type remoteSession struct {
 	cmd *exec.Cmd
 	in  io.WriteCloser
+	pr  *os.File       // read end of the merged output pipe
 	out *bufio.Scanner // merged remote stdout+stderr
 }
 
@@ -89,7 +90,7 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 		return nil, err
 	}
 	pw.Close()
-	s := &remoteSession{cmd: cmd, in: in, out: bufio.NewScanner(pr)}
+	s := &remoteSession{cmd: cmd, in: in, pr: pr, out: bufio.NewScanner(pr)}
 	for s.out.Scan() {
 		line := s.out.Text()
 		arch, ok := strings.CutPrefix(line, "-Arch ")
@@ -106,6 +107,8 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 		}
 		blob, err := json.Marshal(ra)
 		if err != nil {
+			s.kill()
+			cmd.Wait()
 			return nil, err
 		}
 		if _, err := fmt.Fprintf(in, "%d\n%s\n", len(payload), blob); err == nil {
@@ -117,6 +120,11 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 			return nil, fmt.Errorf("shipping payload: %w", err)
 		}
 		return s, nil
+	}
+	if err := s.out.Err(); err != nil {
+		s.kill()
+		cmd.Wait()
+		return nil, fmt.Errorf("reading remote output: %w", err)
 	}
 	cmd.Wait()
 	return nil, errors.New("remote bootstrap failed (no -Arch line)")
@@ -137,6 +145,7 @@ func runAttach(host, pattern string, o attachOpts) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer s.pr.Close()
 	done := false
 	defer func() {
 		if !done {
@@ -166,6 +175,9 @@ loop:
 		default:
 			copyOutput(line)
 		}
+	}
+	if err := s.out.Err(); err != nil {
+		return 0, fmt.Errorf("reading remote output: %w", err)
 	}
 	done = true
 	return waitExit(s.cmd), nil
@@ -200,8 +212,13 @@ func remoteSimple(host string, ra remoteArgs) int {
 	if err != nil {
 		fatalf("%s", err)
 	}
+	defer s.pr.Close()
 	for s.out.Scan() {
 		fmt.Println(s.out.Text())
+	}
+	if err := s.out.Err(); err != nil {
+		s.kill()
+		logf(logErr, "ERROR: reading remote output: "+err.Error()+"\n")
 	}
 	return waitExit(s.cmd)
 }
