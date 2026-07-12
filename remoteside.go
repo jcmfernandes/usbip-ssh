@@ -290,6 +290,3 @@ func lingerLoop(socks []lingerSock) {
 		socks = keep
 	}
 }
-
-// XXX stub, replaced by task 10
-func useSyslog() {}

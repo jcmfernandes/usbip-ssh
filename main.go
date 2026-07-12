@@ -149,7 +149,3 @@ func main() {
 		usage()
 	}
 }
-
-// XXX stubs, replaced by later tasks
-func keepCmd(host, pattern string, o attachOpts)   { fatalf("not implemented") }
-func daemonCmd(host, pattern string, o attachOpts) { fatalf("not implemented") }
