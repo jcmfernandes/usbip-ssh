@@ -18,7 +18,7 @@ usbip-ssh keep   HOST PATTERN     like attach, but reconnect forever with backof
 usbip-ssh daemon HOST PATTERN     like keep, but detached from the tty, using syslog
 usbip-ssh list   HOST [PATTERN]   list USB devices on HOST
 usbip-ssh list --local [PATTERN]  list USB devices on this machine
-usbip-ssh detach PATTERN...|all   detach locally attached usbip devices
+usbip-ssh detach BUSID...|all     detach locally attached usbip devices
 usbip-ssh unbind HOST PATTERN     release a device on HOST back to its normal driver
 ```
 

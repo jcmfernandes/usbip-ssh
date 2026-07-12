@@ -29,7 +29,7 @@ func usage() {
   %[1]s daemon HOST PATTERN     like keep, but detached from the tty, using syslog
   %[1]s list   HOST [PATTERN]   list USB devices on HOST
   %[1]s list --local [PATTERN]  list USB devices on this machine
-  %[1]s detach PATTERN...|all   detach locally attached usbip devices
+  %[1]s detach BUSID...|all     detach locally attached usbip devices
   %[1]s unbind HOST PATTERN     release a device on HOST back to its normal driver
 
 global flags (before the command):
