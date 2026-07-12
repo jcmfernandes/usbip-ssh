@@ -9,8 +9,8 @@ func TestMkDevPattern(t *testing.T) {
 		pattern string
 		want    bool
 	}{
-		{"1-1.4", true},    // busid, anchored
-		{"1-1", false},     // busid must match exactly
+		{"1-1.4", true}, // busid, anchored
+		{"1-1", false},  // busid must match exactly
 		{"03f0:e111", true},
 		{"3f0:e111", true}, // leading zeros optional
 		{"3F0:E111", true}, // hex case-insensitive
@@ -20,7 +20,7 @@ func TestMkDevPattern(t *testing.T) {
 		{"Keyboard", true},
 		{"keyboard", false}, // free text is case-sensitive
 		{"HP Keyboard", true},
-		{"030102", true},    // interface spec
+		{"030102", true},     // interface spec
 		{"!Keyboard", false}, // negation
 		{"!Mouse", true},
 		{"", true}, // empty pattern matches everything
