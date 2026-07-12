@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,5 +34,30 @@ func TestWaitForTimesOut(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "frob the knob") || !strings.Contains(err.Error(), "still frobbing") {
 		t.Fatalf("error should name the wait and the last error, got: %v", err)
+	}
+}
+
+func TestExpectedSum(t *testing.T) {
+	sums := "abc123  debian-13-generic-amd64.qcow2\ndef456  other.qcow2\n"
+	got, err := expectedSum(sums, "debian-13-generic-amd64.qcow2")
+	if err != nil || got != "abc123" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := expectedSum(sums, "missing.qcow2"); err == nil {
+		t.Fatal("expected error for missing entry")
+	}
+}
+
+func TestFileSHA512(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// the well-known SHA-512 test vector for "abc"
+	want := "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a" +
+		"2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+	got, err := fileSHA512(p)
+	if err != nil || got != want {
+		t.Fatalf("got %q, %v", got, err)
 	}
 }
