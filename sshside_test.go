@@ -43,6 +43,7 @@ func TestBootstrapHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.pr.Close()
 	var lines []string
 	for s.out.Scan() {
 		lines = append(lines, s.out.Text())
