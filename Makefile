@@ -11,6 +11,9 @@ endif
 .RECIPEPREFIX = >
 
 GO      ?= go
+# not named UPX: upx reads an environment variable of that name as its
+# default options, and 'make UPX=...' would export it into the recipe
+UPX_BIN ?= upx
 PREFIX  ?= /usr/local
 DESTDIR ?=
 LDFLAGS := -s -w
@@ -30,6 +33,7 @@ embed/payload_%: force
 dist/usbip-ssh_%: payloads force
 > mkdir -p dist
 > CGO_ENABLED=0 GOOS=linux GOARCH=$* $(GO) build -ldflags '$(LDFLAGS)' -o $@ .
+> $(UPX_BIN) -q $@
 
 install: dist/usbip-ssh_$(shell $(GO) env GOHOSTARCH)
 > install -D -m 755 $< $(DESTDIR)$(PREFIX)/bin/usbip-ssh
