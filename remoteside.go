@@ -16,8 +16,27 @@ import (
 )
 
 type lingerSock struct {
-	fd    int
+	file  *os.File
 	busid string
+}
+
+// remoteTmpdir is the socket directory created by remoteScript, if any; it
+// must be removed on every exit path (oneshot -Eof, linger handoff, or a
+// fatal error), not just the happy oneshot path.
+var remoteTmpdir string
+
+func remoteCleanup() {
+	if remoteTmpdir != "" {
+		os.RemoveAll(remoteTmpdir)
+	}
+}
+
+// remoteFatalf cleans up remoteTmpdir before reporting a fatal error, so
+// paths that already created the tmpdir (remoteScript, vhubLoop) don't leak
+// it on the way out.
+func remoteFatalf(format string, a ...any) {
+	remoteCleanup()
+	fatalf(format, a...)
 }
 
 // remoteMain is the payload's entry point on the remote host. Its stdin
@@ -57,16 +76,17 @@ func remoteScript(ra remoteArgs) {
 	pat := mustPattern(ra.Pattern)
 	devs, err := findDev(pat, 1, !ra.Vhub)
 	if err != nil {
-		fatalf("%s", err)
+		remoteFatalf("%s", err)
 	}
 	tmpdir, err := os.MkdirTemp("", progName+"-")
 	if err != nil {
-		fatalf("%s", err)
+		remoteFatalf("%s", err)
 	}
+	remoteTmpdir = tmpdir
 	rpath := tmpdir + "/host"
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: rpath, Net: "unix"})
 	if err != nil {
-		fatalf("listen on %s: %s", rpath, err)
+		remoteFatalf("listen on %s: %s", rpath, err)
 	}
 	fmt.Printf("-Socket %s\n", rpath)
 
@@ -91,9 +111,7 @@ func remoteScript(ra remoteArgs) {
 		if ra.NoLinger {
 			file.Close()
 		} else {
-			socks = append(socks, lingerSock{fd: int(file.Fd()), busid: busid})
-			// keep file referenced so the fd stays open
-			lingerFiles = append(lingerFiles, file)
+			socks = append(socks, lingerSock{file: file, busid: busid})
 		}
 		return nil
 	}
@@ -105,32 +123,28 @@ func remoteScript(ra remoteArgs) {
 		var v [3]string
 		for i, f := range []string{"busnum", "devnum", "speed"} {
 			if v[i], err = xreadFile(devices() + "/" + busid + "/" + f); err != nil {
-				fatalf("%s", err)
+				remoteFatalf("%s", err)
 			}
 		}
 		if err := newDev(busid, v[0], v[1], v[2]); err != nil {
-			fatalf("%s", err)
+			remoteFatalf("%s", err)
 		}
 	}
 
 	if !ra.Vhub {
 		fmt.Println("-Eof")
-		os.RemoveAll(tmpdir)
+		remoteCleanup()
 		spawnLingerAndExit(socks) // exits; sshd sees our session end
 	}
 	vhubLoop(pat, &socks, newDev)
 }
-
-// lingerFiles pins the *os.File of each accepted socket so the runtime
-// does not garbage-collect (and close) them while their raw fd is in use.
-var lingerFiles []*os.File
 
 // vhubLoop monitors uevents and attaches matching devices as they are
 // bound; when the ssh channel dies it hands the sockets to a linger child.
 func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev, speed string) error) {
 	ueFd, err := ueventSocket()
 	if err != nil {
-		fatalf("%s", err)
+		remoteFatalf("%s", err)
 	}
 	buf := make([]byte, 65536)
 	for {
@@ -139,13 +153,13 @@ func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev,
 			unix.PollFd{Fd: 1}, // POLLERR/POLLHUP are always reported
 			unix.PollFd{Fd: int32(ueFd), Events: unix.POLLIN})
 		for _, s := range *socks {
-			pfds = append(pfds, unix.PollFd{Fd: int32(s.fd), Events: pollRDHUP})
+			pfds = append(pfds, unix.PollFd{Fd: int32(s.file.Fd()), Events: pollRDHUP})
 		}
 		if _, err := unix.Poll(pfds, -1); err != nil {
 			if err == unix.EINTR {
 				continue
 			}
-			fatalf("poll: %s", err)
+			remoteFatalf("poll: %s", err)
 		}
 		// handle the dead-channel condition before everything else, lest
 		// we write to a broken pipe below
@@ -157,7 +171,7 @@ func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev,
 			if pfds[2+i].Revents&(pollRDHUP|unix.POLLHUP|unix.POLLERR) != 0 {
 				busid := s.busid
 				xeval(func() error { return remoteDetach(busid) })
-				unix.Close(s.fd)
+				s.file.Close()
 			} else {
 				keep = append(keep, s)
 			}
@@ -171,7 +185,7 @@ func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev,
 			if err == unix.ENOBUFS || err == unix.EINTR || err == unix.EAGAIN {
 				continue
 			}
-			fatalf("recv(kobject_uevent): %s", err)
+			remoteFatalf("recv(kobject_uevent): %s", err)
 		}
 		e := parseUevent(buf[:n])
 		if e["ACTION"] != "bind" || e["DEVTYPE"] != "usb_device" ||
@@ -186,10 +200,10 @@ func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev,
 		}
 		speed, err := xreadFile(p + "/speed")
 		if err != nil {
-			fatalf("%s", err)
+			remoteFatalf("%s", err)
 		}
 		if err := newDev(filepath.Base(p), e["BUSNUM"], e["DEVNUM"], speed); err != nil {
-			fatalf("%s", err)
+			remoteFatalf("%s", err)
 		}
 	}
 }
@@ -221,6 +235,7 @@ func ueventSocket() (int, error) {
 // lets sshd end the session. /proc/self/exe works after self-unlink.
 func spawnLingerAndExit(socks []lingerSock) {
 	if len(socks) == 0 {
+		remoteCleanup()
 		os.Exit(0)
 	}
 	argv := []string{progName, "--sysfs", sysfs, "--modprobe", modprobe}
@@ -231,11 +246,11 @@ func spawnLingerAndExit(socks []lingerSock) {
 	var files []*os.File
 	for _, s := range socks {
 		argv = append(argv, s.busid)
-		files = append(files, os.NewFile(uintptr(s.fd), s.busid))
+		files = append(files, s.file)
 	}
 	devnull, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
 	if err != nil {
-		fatalf("%s", err)
+		remoteFatalf("%s", err)
 	}
 	cmd := &exec.Cmd{
 		Path:       "/proc/self/exe",
@@ -246,9 +261,10 @@ func spawnLingerAndExit(socks []lingerSock) {
 		ExtraFiles: files, // become fds 3, 4, ... in argv order
 	}
 	if err := cmd.Start(); err != nil {
-		fatalf("linger re-exec: %s", err)
+		remoteFatalf("linger re-exec: %s", err)
 	}
 	cmd.Process.Release()
+	remoteCleanup()
 	os.Exit(0)
 }
 
@@ -258,7 +274,7 @@ func lingerMain(busids []string) {
 	useSyslog()
 	socks := make([]lingerSock, len(busids))
 	for i, busid := range busids {
-		socks[i] = lingerSock{fd: 3 + i, busid: busid}
+		socks[i] = lingerSock{file: os.NewFile(uintptr(3+i), busid), busid: busid}
 	}
 	lingerLoop(socks)
 }
@@ -269,7 +285,7 @@ func lingerLoop(socks []lingerSock) {
 	for len(socks) > 0 {
 		pfds := make([]unix.PollFd, len(socks))
 		for i, s := range socks {
-			pfds[i] = unix.PollFd{Fd: int32(s.fd), Events: pollRDHUP}
+			pfds[i] = unix.PollFd{Fd: int32(s.file.Fd()), Events: pollRDHUP}
 		}
 		if _, err := unix.Poll(pfds, -1); err != nil {
 			if err == unix.EINTR {
@@ -282,7 +298,7 @@ func lingerLoop(socks []lingerSock) {
 			if pfds[i].Revents&(pollRDHUP|unix.POLLHUP|unix.POLLERR) != 0 {
 				busid := s.busid
 				xeval(func() error { return remoteDetach(busid) })
-				unix.Close(s.fd)
+				s.file.Close()
 			} else {
 				keep = append(keep, s)
 			}

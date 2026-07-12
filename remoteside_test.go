@@ -28,7 +28,7 @@ func TestLingerLoop(t *testing.T) {
 	peer := os.NewFile(uintptr(fds[1]), "peer")
 	done := make(chan struct{})
 	go func() {
-		lingerLoop([]lingerSock{{fd: fds[0], busid: "1-1.4"}})
+		lingerLoop([]lingerSock{{file: os.NewFile(uintptr(fds[0]), "sock"), busid: "1-1.4"}})
 		close(done)
 	}()
 	peer.Close() // hang up
