@@ -69,7 +69,8 @@ attempt held up.
 
 ## Building
 
-Needs Go and make:
+Needs GNU Make 4.0+, bash, Go and upx — or run `mise install` to get the
+Go and upx versions pinned by the included `mise.toml`:
 
 ```
 make            # dist/usbip-ssh_amd64 and dist/usbip-ssh_arm64
