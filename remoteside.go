@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -76,12 +77,19 @@ func remoteMain(jsonArg string) {
 			fatalf("no devices bound to usbip-host match '%s'", pat)
 		}
 		for _, busid := range bound {
-			// unbind's rebind step can legitimately fail with ENODEV:
-			// the driver core already reprobes the device to its
-			// normal driver as part of the preceding unbind write, at
-			// which point usbip-host's internal busid entry is gone.
-			// Best-effort, like lingerLoop's use of remoteDetach.
-			xeval(func() error { return remoteDetach(busid) })
+			if err := remoteDetach(busid); err != nil {
+				if errors.Is(err, unix.ENODEV) {
+					// Lost the race with the linger child's own
+					// remoteDetach for the same busid: the driver
+					// core already reprobed the device to its normal
+					// driver as part of the winner's unbind write, at
+					// which point usbip-host's internal busid entry
+					// was gone for us. Expected, not an error.
+					warnf("%s", err)
+					continue
+				}
+				fatalf("%s", err)
+			}
 		}
 	case "attach":
 		remoteScript(ra)

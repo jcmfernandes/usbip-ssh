@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // writeTree materializes a map of relative-path → content under a temp dir.
@@ -67,6 +70,17 @@ func TestXwriteFile(t *testing.T) {
 	}
 	if err := xwriteFile(base+"/no/such/dir/f", "x"); err == nil {
 		t.Error("xwriteFile to missing dir should fail")
+	}
+}
+
+// The unbind call site distinguishes a race-loser ENODEV from a genuine
+// failure via errors.Is, so xwriteFile's wrapping must keep the errno
+// unwrappable rather than flattening it into an opaque string.
+func TestXwriteFileErrno(t *testing.T) {
+	dir := t.TempDir()
+	err := xwriteFile(dir, "x") // writing to a directory: EISDIR
+	if !errors.Is(err, unix.EISDIR) {
+		t.Errorf("xwriteFile(dir) = %v, want an error wrapping EISDIR", err)
 	}
 }
 
