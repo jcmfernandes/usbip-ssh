@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -299,4 +300,27 @@ func (v *vm) teardown() {
 	if v.seedOff != nil {
 		v.seedOff()
 	}
+}
+
+// startBg starts cmdline in the guest in its own process group and
+// session (setsid), with output redirected to logPath in the guest.
+// Returns the process group id for killBg.
+func (v *vm) startBg(t *testing.T, cmdline, logPath string) string {
+	t.Helper()
+	out, err := v.ssh(fmt.Sprintf("setsid sh -c '%s >%s 2>&1 & echo $$'", cmdline, logPath))
+	if err != nil {
+		t.Fatalf("starting %q: %v: %s", cmdline, err, out)
+	}
+	pgid := strings.TrimSpace(out)
+	if _, err := strconv.Atoi(pgid); err != nil {
+		t.Fatalf("starting %q: expected a pid, got %q", cmdline, out)
+	}
+	return pgid
+}
+
+// killBg kills the process group started by startBg, taking usbip-ssh
+// and its ssh children down together. Errors are ignored: the group
+// may have already exited.
+func (v *vm) killBg(pgid string) {
+	v.ssh("kill -- -" + pgid)
 }

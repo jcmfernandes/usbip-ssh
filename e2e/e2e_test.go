@@ -178,3 +178,75 @@ func TestList(t *testing.T) {
 		t.Errorf("local list missing %s:\n%s", kbdID, out)
 	}
 }
+
+// attachedKbds reports how many keyboards are vhci-attached, with their
+// exported originals bound to usbip-host.
+func attachedKbds(v *vm, want int) func() (bool, error) {
+	return func() (bool, error) {
+		devs, err := v.usbDevs()
+		if err != nil {
+			return false, err
+		}
+		vh, norm := kbds(devs)
+		if len(vh) != want || len(norm) != want {
+			return false, fmt.Errorf("%d vhci / %d normal keyboards, want %d/%d", len(vh), len(norm), want, want)
+		}
+		for _, d := range norm {
+			if d.driver != "usbip-host" {
+				return false, fmt.Errorf("exported keyboard %s bound to %q, want usbip-host", d.busid, d.driver)
+			}
+		}
+		return true, nil
+	}
+}
+
+// releasedKbds reports that no keyboard is vhci-attached and count
+// keyboards are back on the normal usb driver.
+func releasedKbds(v *vm, count int) func() (bool, error) {
+	return func() (bool, error) {
+		devs, err := v.usbDevs()
+		if err != nil {
+			return false, err
+		}
+		vh, norm := kbds(devs)
+		if len(vh) != 0 || len(norm) != count {
+			return false, fmt.Errorf("%d vhci / %d normal keyboards, want 0/%d", len(vh), len(norm), count)
+		}
+		for _, d := range norm {
+			if d.driver != "usb" {
+				return false, fmt.Errorf("keyboard %s bound to %q, want usb", d.busid, d.driver)
+			}
+		}
+		return true, nil
+	}
+}
+
+func TestAttachDetach(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v attach root@localhost "+kbdID, "/tmp/attach.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "keyboard to attach via vhci", 60*time.Second, attachedKbds(v, 1))
+
+	if out, err := v.ssh("usbip-ssh detach all"); err != nil {
+		t.Fatalf("detach all: %v: %s", err, out)
+	}
+	mustWait(t, "keyboard to rebind to its usb driver", 60*time.Second, releasedKbds(v, 1))
+}
+
+func TestUnbind(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v attach root@localhost "+kbdID, "/tmp/attach.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "keyboard to attach via vhci", 60*time.Second, attachedKbds(v, 1))
+
+	if out, err := v.ssh("usbip-ssh -v unbind root@localhost " + kbdID); err != nil {
+		t.Fatalf("unbind: %v: %s", err, out)
+	}
+	mustWait(t, "keyboard to return to its usb driver", 60*time.Second, releasedKbds(v, 1))
+}
