@@ -37,17 +37,6 @@ func TestWaitForTimesOut(t *testing.T) {
 	}
 }
 
-func TestExpectedSum(t *testing.T) {
-	sums := "abc123  debian-13-generic-amd64.qcow2\ndef456  other.qcow2\n"
-	got, err := expectedSum(sums, "debian-13-generic-amd64.qcow2")
-	if err != nil || got != "abc123" {
-		t.Fatalf("got %q, %v", got, err)
-	}
-	if _, err := expectedSum(sums, "missing.qcow2"); err == nil {
-		t.Fatal("expected error for missing entry")
-	}
-}
-
 func TestFileSHA512(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f")
 	if err := os.WriteFile(p, []byte("abc"), 0o644); err != nil {

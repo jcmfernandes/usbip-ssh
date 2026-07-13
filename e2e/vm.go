@@ -41,21 +41,16 @@ func waitFor(desc string, timeout time.Duration, cond func() (bool, error)) erro
 	}
 }
 
+// Pinned to a specific immutable Debian cloud build so e2e runs are
+// reproducible and verification needs no network. To refresh, bump imageBuild
+// and imageSHA512 together (from that build's SHA512SUMS); old builds are
+// eventually pruned from the mirrors, so the pinned URL will 404 someday.
 const (
-	imageName = "debian-13-generic-amd64.qcow2"
-	imageBase = "https://cloud.debian.org/images/cloud/trixie/latest/"
+	imageBuild  = "20260712-2537"
+	imageName   = "debian-13-generic-amd64-" + imageBuild + ".qcow2"
+	imageBase   = "https://cloud.debian.org/images/cloud/trixie/" + imageBuild + "/"
+	imageSHA512 = "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a308697794678ceb5cd3b7c86afd5fb892afbc6baf9d2dbaceb7855347fde8660e8d68e667"
 )
-
-// expectedSum extracts the hash for name from SHA512SUMS-format content.
-func expectedSum(sums, name string) (string, error) {
-	for _, line := range strings.Split(sums, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == name {
-			return fields[0], nil
-		}
-	}
-	return "", fmt.Errorf("no entry for %s in SHA512SUMS", name)
-}
 
 func fileSHA512(path string) (string, error) {
 	f, err := os.Open(path)
@@ -91,8 +86,9 @@ func download(url, dest string) error {
 }
 
 // baseImage returns the path of the verified cached debian image,
-// downloading it and its SHA512SUMS on first use. Cached runs need no
-// network: the image is re-verified against the cached sums file.
+// downloading it on first use. The image is pinned to a specific immutable
+// build (see imageBuild) and re-verified against imageSHA512 on every run, so
+// cached runs need no network.
 func baseImage() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -103,12 +99,8 @@ func baseImage() (string, error) {
 		return "", err
 	}
 	img := filepath.Join(dir, imageName)
-	sums := filepath.Join(dir, "SHA512SUMS")
 	if _, err := os.Stat(img); err != nil {
 		log.Printf("e2e: downloading %s (~400 MB, one-time, cached in %s)", imageBase+imageName, dir)
-		if err := download(imageBase+"SHA512SUMS", sums); err != nil {
-			return "", err
-		}
 		if err := download(imageBase+imageName, img+".part"); err != nil {
 			return "", err
 		}
@@ -116,19 +108,11 @@ func baseImage() (string, error) {
 			return "", err
 		}
 	}
-	sumsContent, err := os.ReadFile(sums)
-	if err != nil {
-		return "", fmt.Errorf("%v (delete %s to re-download)", err, img)
-	}
-	want, err := expectedSum(string(sumsContent), imageName)
-	if err != nil {
-		return "", err
-	}
 	got, err := fileSHA512(img)
 	if err != nil {
 		return "", err
 	}
-	if got != want {
+	if got != imageSHA512 {
 		return "", fmt.Errorf("%s: checksum mismatch (delete it to re-download)", img)
 	}
 	return img, nil
