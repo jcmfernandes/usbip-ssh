@@ -21,6 +21,11 @@ func TestParseUevent(t *testing.T) {
 func TestLingerLoop(t *testing.T) {
 	withFixtureSysfs(t)
 	mkFile(t, drivers()+"/usbip-host/unbind", "")
+	// settleDriver only needs to see *a* driver symlink to conclude the
+	// device settled without polling; the target need not resolve.
+	if err := os.Symlink("usb", devices()+"/1-1.4/driver"); err != nil {
+		t.Fatal(err)
+	}
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
 		t.Fatal(err)

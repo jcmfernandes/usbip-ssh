@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,14 +57,31 @@ func remoteMain(jsonArg string) {
 			fatalf("%s", err)
 		}
 	case "unbind":
-		devs, err := findDev(mustPattern(ra.Pattern), 1, false)
+		pat := mustPattern(ra.Pattern)
+		devs, err := findDev(pat, 1, false)
 		if err != nil {
 			fatalf("%s", err)
 		}
+		// A vid:pid pattern can also match a vhci-attached copy of the
+		// same device (notably when attacher and exporter are the same
+		// host); only unbind devices actually bound to usbip-host.
+		var bound []string
 		for _, busid := range devs {
-			if err := remoteDetach(busid); err != nil {
-				fatalf("%s", err)
+			status, _ := strconv.Atoi(readFile(drivers() + "/usbip-host/" + busid + "/usbip_status"))
+			if status != 0 {
+				bound = append(bound, busid)
 			}
+		}
+		if len(bound) == 0 {
+			fatalf("no devices bound to usbip-host match '%s'", pat)
+		}
+		for _, busid := range bound {
+			// unbind's rebind step can legitimately fail with ENODEV:
+			// the driver core already reprobes the device to its
+			// normal driver as part of the preceding unbind write, at
+			// which point usbip-host's internal busid entry is gone.
+			// Best-effort, like lingerLoop's use of remoteDetach.
+			xeval(func() error { return remoteDetach(busid) })
 		}
 	case "attach":
 		remoteScript(ra)

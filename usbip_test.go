@@ -140,6 +140,11 @@ func TestRemoteAttachUnbound(t *testing.T) {
 func TestRemoteDetach(t *testing.T) {
 	withFixtureSysfs(t)
 	mkFile(t, drivers()+"/usbip-host/unbind", "")
+	// settleDriver only needs to see *a* driver symlink to conclude the
+	// device settled without polling; the target need not resolve.
+	if err := os.Symlink("usb", devices()+"/1-1.4/driver"); err != nil {
+		t.Fatal(err)
+	}
 	if err := remoteDetach("1-1.4"); err != nil {
 		t.Fatal(err)
 	}

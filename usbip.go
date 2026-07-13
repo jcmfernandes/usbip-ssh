@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // speed codes as per linux/usb/ch9.h, sysfs status values as per
@@ -171,14 +172,41 @@ func remoteAttach(sockfd int, busid string, unmount bool) error {
 	return xwriteFile(devices()+"/"+busid+"/usbip_sockfd", strconv.Itoa(sockfd))
 }
 
+// remoteDetach releases busid back to its normal driver: unbind it from
+// usbip-host, drop it from future auto-matching, and make sure it ends up
+// with a driver again.
+//
+// It can run concurrently with itself for the same busid: a direct
+// "unbind" command races the linger child reacting to the very hangup
+// that unbind causes. The driver core serializes the unbind write itself,
+// but that race can also make usbip-host's own match_busid/rebind
+// bookkeeping fail with ENODEV (whichever caller wins clears usbip-host's
+// internal busid entry first) and can occasionally leave the device
+// transiently driverless, so those steps are best-effort and settleDriver
+// falls back to a generic reprobe if the device hasn't settled.
 func remoteDetach(busid string) error {
 	if err := xwriteFile(drivers()+"/usbip-host/unbind", busid); err != nil {
 		return err
 	}
-	if err := xwriteFile(drivers()+"/usbip-host/match_busid", "del "+busid); err != nil {
-		return err
+	xeval(func() error { return xwriteFile(drivers()+"/usbip-host/match_busid", "del "+busid) })
+	xeval(func() error { return xwriteFile(drivers()+"/usbip-host/rebind", busid) })
+	return settleDriver(busid)
+}
+
+// settleDriver waits briefly for busid to have any driver bound, forcing
+// a generic reprobe (independent of usbip-host's own bookkeeping) if it's
+// still driverless once the deadline passes.
+func settleDriver(busid string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Readlink(devices() + "/" + busid + "/driver"); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return xwriteFile(sysfs+"/bus/usb/drivers_probe", busid)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return xwriteFile(drivers()+"/usbip-host/rebind", busid)
 }
 
 var octalEsc = regexp.MustCompile(`\\[0-7]{3}`)
