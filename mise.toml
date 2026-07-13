@@ -1,3 +1,5 @@
 [tools]
-go = "1.26.4"
-upx = "5.2.0"
+"go" = "1.26.4"
+"upx" = "5.2.0"
+"golangci-lint" = "v2.12.2"
+"go:gotest.tools/gotestsum" = "1.13.0"
