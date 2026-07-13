@@ -207,7 +207,8 @@ func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev,
 		}
 		e := parseUevent(buf[:n])
 		if e["ACTION"] != "bind" || e["DEVTYPE"] != "usb_device" ||
-			e["DRIVER"] != "usb" || strings.HasPrefix(e["TYPE"], "9/") {
+			e["DRIVER"] != "usb" || strings.HasPrefix(e["TYPE"], "9/") ||
+			strings.Contains(e["DEVPATH"], "vhci_hcd") {
 			continue
 		}
 		p := sysfs + e["DEVPATH"]
