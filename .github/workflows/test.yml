@@ -13,9 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
-  checks: write        # action-junit-report publishes a check run
-  pull-requests: write # ...and annotates the PR
+  contents: "read"
+  checks: "write"        # action-junit-report publishes a check run
+  pull-requests: "write" # ...and annotates the PR
 
 jobs:
   unit:
