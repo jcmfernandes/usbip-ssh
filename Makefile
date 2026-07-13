@@ -33,7 +33,7 @@ embed/payload_%: force
 dist/usbip-ssh_%: payloads force
 > mkdir -p dist
 > CGO_ENABLED=0 GOOS=linux GOARCH=$* $(GO) build -ldflags '$(LDFLAGS)' -o $@ .
-> $(UPX_BIN) -q $@
+> $(UPX_BIN) -q --best --lzma $@
 
 install: dist/usbip-ssh_$(shell $(GO) env GOHOSTARCH)
 > install -D -m 755 $< $(DESTDIR)$(PREFIX)/bin/usbip-ssh
