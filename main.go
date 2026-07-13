@@ -34,6 +34,7 @@ func usage() {
 
 global flags (before the command):
   -v, --verbose        debug output
+  --version            print version and exit
   --ssh 'ssh -p 2222'  ssh command to use (default "ssh")
   --sysfs PATH         sysfs mount point (default "/sys")
   --modprobe PATH      modprobe command (default "modprobe")
@@ -73,10 +74,15 @@ func main() {
 	gfs.Usage = usage
 	gfs.BoolVar(&verbose, "v", false, "verbose")
 	gfs.BoolVar(&verbose, "verbose", false, "verbose")
+	showVersion := gfs.Bool("version", false, "print version and exit")
 	sshFlag := gfs.String("ssh", "ssh", "ssh command")
 	gfs.StringVar(&sysfs, "sysfs", "/sys", "sysfs mount point")
 	gfs.StringVar(&modprobe, "modprobe", "modprobe", "modprobe command")
 	gfs.Parse(os.Args[1:])
+	if *showVersion {
+		fmt.Println(progName, version)
+		os.Exit(0)
+	}
 	sshCmd = strings.Fields(*sshFlag)
 	if len(sshCmd) == 0 {
 		fatalf("empty --ssh command")

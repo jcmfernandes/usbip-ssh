@@ -7,6 +7,9 @@ import (
 
 const progName = "usbip-ssh"
 
+// version is stamped at build time via -ldflags -X main.version=...
+var version = "dev"
+
 // syslog(3) priorities / facility.
 const (
 	logErr     = 3
