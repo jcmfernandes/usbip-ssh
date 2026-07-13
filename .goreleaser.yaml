@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: usbip-ssh
+
+# The main package //go:embed's embed/payload_{amd64,arm64}; both must exist
+# before any main binary can compile, so build them once up front.
+before:
+  hooks:
+    - make payloads
+
+builds:
+  - id: usbip-ssh
+    binary: usbip-ssh
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+# Match the Makefile's `upx -q --best --lzma`. The embedded payloads are not
+# packed (only the final binary is), same as `make all`.
+upx:
+  - enabled: true
+    compress: best
+    lzma: true
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  # A tag with a hyphen (v1.0.0-rc1) is published as a prerelease.
+  prerelease: auto

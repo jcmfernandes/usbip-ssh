@@ -1,0 +1,34 @@
+name: "release"
+
+on:
+  push:
+    tags: ["v*"]
+
+# goreleaser creates the GitHub release and uploads the archives.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: "release@ubuntu-latest"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 20
+    steps:
+      - uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
+        with:
+          # goreleaser needs the full history and tags for changelog/versioning.
+          fetch-depth: 0
+
+      - uses: "bckground/actions/setup-mise@main"
+        with:
+          cache-backend: "github"
+
+      - name: "Download all go dependencies"
+        run: |
+          go mod download
+
+      - name: "Run goreleaser"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          goreleaser release --clean

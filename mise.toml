@@ -3,3 +3,4 @@
 "upx" = "5.2.0"
 "golangci-lint" = "v2.12.2"
 "go:gotest.tools/gotestsum" = "1.13.0"
+"goreleaser" = "2.17.0"
