@@ -1,0 +1,118 @@
+name: "test"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write        # action-junit-report publishes a check run
+  pull-requests: write # ...and annotates the PR
+
+jobs:
+  unit:
+    name: "unit@ubuntu-latest"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 15
+    steps:
+      - uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
+
+      - uses: "bckground/actions/setup-mise@main"
+        with:
+          cache-backend: "github"
+
+      - id: "go-restore-caches"
+        uses: "bckground/actions/cache-go/restore@main"
+        with:
+          cache-backend: "github"
+          cache-name: "test-unit"
+
+      - name: "Download all go dependencies"
+        run: |
+          go mod download
+
+      # The main package //go:embed's these, so they must exist to compile.
+      - name: "Build embedded payloads"
+        run: |
+          make payloads
+
+      - name: Run tests
+        run: |
+          gotestsum --junitfile=junitreport.xml -- -count=1 -race ./...
+
+      - name: "Publish test report"
+        uses: "mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16" # v6.4.2
+        if: always()
+        with:
+          report_paths: "junitreport.xml"
+          check_name: "test report / unit"
+
+      - if: ${{ (github.ref_name == github.event.repository.default_branch || steps.go-restore-caches.outputs.cache_hit == 'false') && (success() || failure()) }}
+        uses: "bckground/actions/cache-go/save@main"
+        with:
+          cache-backend: "github"
+          cache-name: "test-unit"
+
+  e2e:
+    name: "e2e@ubuntu-latest"
+    runs-on: "ubuntu-latest"
+    timeout-minutes: 25
+    steps:
+      - uses: "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0" # v7.0.0
+
+      - uses: "bckground/actions/setup-mise@main"
+        with:
+          cache-backend: "github"
+
+      - id: "go-restore-caches"
+        uses: "bckground/actions/cache-go/restore@main"
+        with:
+          cache-backend: "github"
+          cache-name: "test-e2e"
+
+      - name: "Download all go dependencies"
+        run: |
+          go mod download
+
+      # GitHub-hosted Linux runners expose /dev/kvm; grant the runner access.
+      - name: "Enable KVM"
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: "Install QEMU"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
+
+      # e2e/vm.go's checkPrereqs expects the UPX-packed dist binary.
+      - name: "Build packed binary"
+        run: |
+          make dist/usbip-ssh_amd64
+
+      - name: "Run tests"
+        run: |
+          gotestsum --junitfile=junitreport.xml -- -tags e2e -count=1 -timeout 10m ./e2e/
+
+      - name: "Publish test report"
+        uses: "mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16" # v6.4.2
+        if: always()
+        with:
+          report_paths: "junitreport.xml"
+          check_name: "test report / e2e"
+
+      - if: ${{ (github.ref_name == github.event.repository.default_branch || steps.go-restore-caches.outputs.cache_hit == 'false') && (success() || failure()) }}
+        uses: "bckground/actions/cache-go/save@main"
+        with:
+          cache-backend: "github"
+          cache-name: "test-e2e"
