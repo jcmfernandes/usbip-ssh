@@ -4,9 +4,8 @@ on:
   push:
     tags: ["v*"]
 
-# goreleaser creates the GitHub release and uploads the archives.
 permissions:
-  contents: write
+  contents: "write" # goreleaser creates the GitHub release and uploads the archives.
 
 jobs:
   release:
@@ -23,12 +22,20 @@ jobs:
         with:
           cache-backend: "github"
 
-      - name: "Download all go dependencies"
-        run: |
-          go mod download
+      - id: "go-restore-caches"
+        uses: "bckground/actions/cache-go/restore@main"
+        with:
+          cache-backend: "github"
+          name: "release"
 
       - name: "Run goreleaser"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           goreleaser release --clean
+
+      - if: ${{ (github.ref_name == github.event.repository.default_branch || steps.go-restore-caches.outputs.cache_hit == 'false') && (success() || failure()) }}
+        uses: "bckground/actions/cache-go/save@main"
+        with:
+          cache-backend: "github"
+          name: "release"
