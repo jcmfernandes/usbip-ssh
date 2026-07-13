@@ -250,3 +250,52 @@ func TestUnbind(t *testing.T) {
 	}
 	mustWait(t, "keyboard to return to its usb driver", 60*time.Second, releasedKbds(v, 1))
 }
+
+func TestVhubHotAttach(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v attach --vhub root@localhost "+kbdID, "/tmp/vhub.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "first keyboard to attach", 60*time.Second, attachedKbds(v, 1))
+
+	// hot-plug a second matching keyboard while --vhub is watching
+	if err := v.qmp.deviceAdd("usb-kbd", "kbd1"); err != nil {
+		t.Fatalf("device_add kbd1: %v", err)
+	}
+	mustWait(t, "second keyboard to hot-attach", 60*time.Second, attachedKbds(v, 2))
+
+	// killing the whole session must release and rebind both devices
+	v.killBg(pg)
+	mustWait(t, "both keyboards to rebind after the session dies", 60*time.Second, releasedKbds(v, 2))
+}
+
+func TestKeepReconnect(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v keep root@localhost "+kbdID, "/tmp/keep.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "keyboard to attach", 60*time.Second, attachedKbds(v, 1))
+
+	// unplug: the connection collapses and keep enters its retry loop
+	if err := v.qmp.deviceDel("kbd0"); err != nil {
+		t.Fatalf("device_del kbd0: %v", err)
+	}
+	mustWait(t, "keyboard to disappear", 60*time.Second, func() (bool, error) {
+		devs, err := v.usbDevs()
+		if err != nil {
+			return false, err
+		}
+		vh, norm := kbds(devs)
+		return len(vh) == 0 && len(norm) == 0, nil
+	})
+
+	// replug: keep's backoff loop must re-attach without being restarted
+	if err := v.qmp.deviceAdd("usb-kbd", "kbd0"); err != nil {
+		t.Fatalf("device_add kbd0: %v", err)
+	}
+	mustWait(t, "keep to re-attach the keyboard", 3*time.Minute, attachedKbds(v, 1))
+}
