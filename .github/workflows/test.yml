@@ -33,7 +33,7 @@ jobs:
         uses: "bckground/actions/cache-go/restore@main"
         with:
           cache-backend: "github"
-          cache-name: "test-unit"
+          name: "test-unit"
 
       - name: "Download all go dependencies"
         run: |
@@ -59,7 +59,7 @@ jobs:
         uses: "bckground/actions/cache-go/save@main"
         with:
           cache-backend: "github"
-          cache-name: "test-unit"
+          name: "test-unit"
 
   e2e:
     name: "e2e@ubuntu-latest"
@@ -76,7 +76,7 @@ jobs:
         uses: "bckground/actions/cache-go/restore@main"
         with:
           cache-backend: "github"
-          cache-name: "test-e2e"
+          name: "test-e2e"
 
       - name: "Download all go dependencies"
         run: |
@@ -115,4 +115,4 @@ jobs:
         uses: "bckground/actions/cache-go/save@main"
         with:
           cache-backend: "github"
-          cache-name: "test-e2e"
+          name: "test-e2e"
