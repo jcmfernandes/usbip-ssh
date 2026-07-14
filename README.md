@@ -25,16 +25,28 @@ usbip-ssh detach BUSID...|all     detach locally attached usbip devices
 usbip-ssh unbind HOST PATTERN     release a device on HOST back to its normal driver
 ```
 
+The `-r`/`--reverse` flag runs any of these in reverse — exporting a
+**local** device to HOST instead of importing one from it. In reverse mode
+HOST is the importer and `PATTERN` matches local devices:
+
+```
+usbip-ssh attach -r HOST PATTERN         export a matching local device to HOST
+usbip-ssh keep   -r HOST PATTERN         like attach -r, but reconnect forever
+usbip-ssh daemon -r HOST PATTERN         like keep -r, but detached, using syslog
+usbip-ssh detach -r HOST BUSID...|all    tear down usbip devices on HOST
+usbip-ssh unbind -r PATTERN              release a local exported device (no ssh)
+```
+
 Global flags (before the command): `-v`/`--verbose`; `--ssh 'ssh -p 2222 -J
 jump'` to choose the ssh command (like rsync's `-e`); `--sysfs PATH`;
 `--modprobe PATH`.
 
-Attach flags (after the command): `--vhub` keeps monitoring HOST and
-hot-attaches matching devices as they (re)appear — the pattern may then
-match several devices; `--no-unmount` skips unmounting filesystems backed
-by the device before exporting it; `--no-linger` makes the remote side not
-wait around to rebind the device to its original driver when the
-connection drops.
+Attach flags (after the command): `-r`/`--reverse` exports a local device
+to HOST (see above); `--vhub` keeps monitoring for matching devices and
+hot-attaches them as they (re)appear — the pattern may then match several
+devices; `--no-unmount` skips unmounting filesystems backed by the device
+before exporting it; `--no-linger` makes the exporter side not wait around
+to rebind the device to its original driver when the connection drops.
 
 `PATTERN` is as printed by `list`: a busid like `3-3.1`, a `vid:pid` like
 `03f0:e111` (leading zeros optional), or a regexp matched against the
