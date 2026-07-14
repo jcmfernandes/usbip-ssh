@@ -291,7 +291,7 @@ func bootPair(dir string) (*pair, error) {
 		return nil, err
 	}
 	linkAddr := fmt.Sprintf("127.0.0.1:%d", linkPort)
-	common := vmConfig{mem: 256, keyFile: key, pubKey: strings.TrimSpace(string(pub)), privB64: privB64}
+	common := vmConfig{mem: 384, keyFile: key, pubKey: strings.TrimSpace(string(pub)), privB64: privB64}
 
 	devCfg := common
 	devCfg.dir, devCfg.linkListen, devCfg.linkMAC, devCfg.linkIP =
