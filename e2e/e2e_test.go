@@ -271,6 +271,92 @@ func TestVhubHotAttach(t *testing.T) {
 	mustWait(t, "both keyboards to rebind after the session dies", 60*time.Second, releasedKbds(v, 2))
 }
 
+// Reverse mode (-r) exports a local device to HOST: the local machine is the
+// exporter and HOST the importer. Against root@localhost the guest exports its
+// keyboard to itself, so the observable end state — a vhci copy plus the
+// original bound to usbip-host — is identical to forward mode.
+
+func TestReverseAttachDetach(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v attach -r root@localhost "+kbdID, "/tmp/rattach.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "keyboard to reverse-attach via vhci", 60*time.Second, attachedKbds(v, 1))
+
+	// reverse detach tears down the importer's (HOST's) vhci port
+	if out, err := v.ssh("usbip-ssh -v detach -r root@localhost all"); err != nil {
+		t.Fatalf("detach -r all: %v: %s", err, out)
+	}
+	mustWait(t, "keyboard to rebind to its usb driver", 60*time.Second, releasedKbds(v, 1))
+}
+
+func TestReverseUnbind(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v attach -r root@localhost "+kbdID, "/tmp/rattach.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "keyboard to reverse-attach via vhci", 60*time.Second, attachedKbds(v, 1))
+
+	// reverse unbind releases the local exporter device directly, no ssh
+	if out, err := v.ssh("usbip-ssh -v unbind -r " + kbdID); err != nil {
+		t.Fatalf("unbind -r: %v: %s", err, out)
+	}
+	mustWait(t, "keyboard to return to its usb driver", 60*time.Second, releasedKbds(v, 1))
+}
+
+func TestReverseVhubHotAttach(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v attach -r --vhub root@localhost "+kbdID, "/tmp/rvhub.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "first keyboard to reverse-attach", 60*time.Second, attachedKbds(v, 1))
+
+	// hot-plug a second matching keyboard while --vhub is watching locally
+	if err := v.qmp.deviceAdd("usb-kbd", "kbd1"); err != nil {
+		t.Fatalf("device_add kbd1: %v", err)
+	}
+	mustWait(t, "second keyboard to hot-attach", 60*time.Second, attachedKbds(v, 2))
+
+	// killing the whole session must release and rebind both devices
+	v.killBg(pg)
+	mustWait(t, "both keyboards to rebind after the session dies", 60*time.Second, releasedKbds(v, 2))
+}
+
+func TestReverseKeepReconnect(t *testing.T) {
+	v := sharedVM(t)
+	resetState(t, v)
+	plugKbd(t, v, "kbd0", 1)
+
+	pg := v.startBg(t, "usbip-ssh -v keep -r root@localhost "+kbdID, "/tmp/rkeep.log")
+	t.Cleanup(func() { v.killBg(pg) })
+	mustWait(t, "keyboard to reverse-attach", 60*time.Second, attachedKbds(v, 1))
+
+	// unplug: the connection collapses and keep enters its retry loop
+	if err := v.qmp.deviceDel("kbd0"); err != nil {
+		t.Fatalf("device_del kbd0: %v", err)
+	}
+	mustWait(t, "keyboard to disappear", 60*time.Second, func() (bool, error) {
+		devs, err := v.usbDevs()
+		if err != nil {
+			return false, err
+		}
+		vh, norm := kbds(devs)
+		return len(vh) == 0 && len(norm) == 0, nil
+	})
+
+	// replug: keep's backoff loop must re-attach without being restarted
+	if err := v.qmp.deviceAdd("usb-kbd", "kbd0"); err != nil {
+		t.Fatalf("device_add kbd0: %v", err)
+	}
+	mustWait(t, "keep to re-attach the keyboard", 3*time.Minute, attachedKbds(v, 1))
+}
+
 func TestKeepReconnect(t *testing.T) {
 	v := sharedVM(t)
 	resetState(t, v)

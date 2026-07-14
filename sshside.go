@@ -219,7 +219,7 @@ func attachFromLine(lpath, rest string) error {
 		return err
 	}
 	defer file.Close()
-	return localAttach(int(file.Fd()), bus, dev, f[2])
+	return importerAttach(int(file.Fd()), bus, dev, f[2])
 }
 
 // remoteSimple runs a remote list/unbind, passing its output through.

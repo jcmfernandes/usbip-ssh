@@ -35,9 +35,10 @@ func nextWait(wait, dt float64) float64 {
 }
 
 // persistent runs f forever, spacing retries out the longer it keeps
-// failing quickly, and resetting the backoff after a long good run.
+// failing quickly, and resetting the backoff after a long good run. It stops
+// once a shutdown signal has been caught (reverse mode, between sessions).
 func persistent(f func() error) {
-	for wait := minWait; ; {
+	for wait := minWait; !shuttingDown.Load(); {
 		start := time.Now()
 		xeval(f)
 		dt := time.Since(start).Seconds()
@@ -58,7 +59,7 @@ var keepSSHOpts = []string{
 func keepCmd(host, pattern string, o attachOpts) {
 	sshCmd = append(sshCmd, keepSSHOpts...)
 	persistent(func() error {
-		_, err := runAttach(host, pattern, o)
+		_, err := runSession(host, pattern, o)
 		return err
 	})
 }

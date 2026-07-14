@@ -8,7 +8,7 @@ import (
 )
 
 type attachOpts struct {
-	vhub, noUnmount, noLinger bool
+	vhub, noUnmount, noLinger, reverse bool
 }
 
 // remoteArgs is the JSON argument line sent to the remote payload.
@@ -32,6 +32,15 @@ func usage() {
   %[1]s detach BUSID...|all     detach locally attached usbip devices
   %[1]s unbind HOST PATTERN     release a device on HOST back to its normal driver
 
+reverse mode (-r/--reverse) exports a local device to HOST instead; HOST is
+the importer and PATTERN matches local devices:
+
+  %[1]s attach -r HOST PATTERN  export a matching local USB device to HOST
+  %[1]s keep   -r HOST PATTERN  like attach -r, but reconnect forever
+  %[1]s daemon -r HOST PATTERN  like keep -r, but detached, using syslog
+  %[1]s detach -r HOST BUSID...|all  tear down usbip devices on HOST
+  %[1]s unbind -r PATTERN       release a local exported device (no ssh)
+
 global flags (before the command):
   -v, --verbose        debug output
   --version            print version and exit
@@ -40,10 +49,12 @@ global flags (before the command):
   --modprobe PATH      modprobe command (default "modprobe")
 
 attach/keep/daemon flags (after the command):
-  --vhub               virtual hub mode: monitor HOST and hot-attach matching
-                       devices as they (re)appear; PATTERN may match several
+  -r, --reverse        export a local device to HOST (roles reversed)
+  --vhub               virtual hub mode: monitor for matching devices and
+                       hot-attach them as they (re)appear; PATTERN may match
+                       several
   --no-unmount         do not unmount filesystems backed by the device first
-  --no-linger          the remote side does not stay around to rebind the
+  --no-linger          the exporter side does not stay around to rebind the
                        device to its original driver when the connection drops
 
 HOST is anything ssh accepts (root@10.0.0.7, an ssh alias, ...).
@@ -61,12 +72,35 @@ func parseAttachArgs(name string, args []string) (string, string, attachOpts) {
 	fs.BoolVar(&o.vhub, "vhub", false, "virtual hub mode")
 	fs.BoolVar(&o.noUnmount, "no-unmount", false, "skip unmounting")
 	fs.BoolVar(&o.noLinger, "no-linger", false, "no remote linger")
+	fs.BoolVar(&o.reverse, "r", false, "reverse: export a local device to HOST")
+	fs.BoolVar(&o.reverse, "reverse", false, "reverse: export a local device to HOST")
 	fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) != 2 {
 		usage()
 	}
 	return rest[0], rest[1], o
+}
+
+// runSession runs one attach session, forward (import a HOST device) or
+// reverse (export a local device to HOST).
+func runSession(host, pattern string, o attachOpts) (int, error) {
+	if o.reverse {
+		return runReverseAttach(host, pattern, o)
+	}
+	return runAttach(host, pattern, o)
+}
+
+// parseReverse pulls a -r/--reverse flag off a detach/unbind arg list,
+// returning whether it was set and the remaining positional arguments.
+func parseReverse(name string, args []string) (bool, []string) {
+	var reverse bool
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs.Usage = usage
+	fs.BoolVar(&reverse, "r", false, "reverse")
+	fs.BoolVar(&reverse, "reverse", false, "reverse")
+	fs.Parse(args)
+	return reverse, fs.Args()
 }
 
 func main() {
@@ -97,7 +131,7 @@ func main() {
 		host, pattern, o := parseAttachArgs(cmd, args)
 		switch cmd {
 		case "attach":
-			code, err := runAttach(host, pattern, o)
+			code, err := runSession(host, pattern, o)
 			if err != nil {
 				fatalf("%s", err)
 			}
@@ -132,18 +166,35 @@ func main() {
 				remoteArgs{Op: "list", Pattern: pattern, Verbose: verbose}))
 		}
 	case "detach":
-		if len(args) == 0 {
+		reverse, rest := parseReverse(cmd, args)
+		if reverse {
+			// detach -r HOST BUSID...|all: tear down vhci ports on HOST.
+			if len(rest) < 2 {
+				usage()
+			}
+			os.Exit(remoteSimple(rest[0],
+				remoteArgs{Op: "detach", Pattern: strings.Join(rest[1:], " "), Verbose: verbose}))
+		}
+		if len(rest) == 0 {
 			usage()
 		}
-		if err := localDetach(args); err != nil {
+		if err := importerDetach(rest); err != nil {
 			fatalf("%s", err)
 		}
 	case "unbind":
-		if len(args) != 2 {
+		reverse, rest := parseReverse(cmd, args)
+		if reverse {
+			// unbind -r PATTERN: release the local exporter device (no ssh).
+			if len(rest) != 1 {
+				usage()
+			}
+			os.Exit(reverseUnbind(rest[0]))
+		}
+		if len(rest) != 2 {
 			usage()
 		}
-		os.Exit(remoteSimple(args[0],
-			remoteArgs{Op: "unbind", Pattern: args[1], Verbose: verbose}))
+		os.Exit(remoteSimple(rest[0],
+			remoteArgs{Op: "unbind", Pattern: rest[1], Verbose: verbose}))
 	case "remote": // internal: payload side, args[0] is the JSON argument line
 		if len(args) != 1 {
 			usage()

@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -58,41 +58,17 @@ func remoteMain(jsonArg string) {
 			fatalf("%s", err)
 		}
 	case "unbind":
-		pat := mustPattern(ra.Pattern)
-		devs, err := findDev(pat, 1, false)
-		if err != nil {
+		if err := unbindMatching(mustPattern(ra.Pattern)); err != nil {
 			fatalf("%s", err)
-		}
-		// A vid:pid pattern can also match a vhci-attached copy of the
-		// same device (notably when attacher and exporter are the same
-		// host); only unbind devices actually bound to usbip-host.
-		var bound []string
-		for _, busid := range devs {
-			status, _ := strconv.Atoi(readFile(drivers() + "/usbip-host/" + busid + "/usbip_status"))
-			if status != 0 {
-				bound = append(bound, busid)
-			}
-		}
-		if len(bound) == 0 {
-			fatalf("no devices bound to usbip-host match '%s'", pat)
-		}
-		for _, busid := range bound {
-			if err := remoteDetach(busid); err != nil {
-				if errors.Is(err, unix.ENODEV) {
-					// Lost the race with the linger child's own
-					// remoteDetach for the same busid: the driver
-					// core already reprobed the device to its normal
-					// driver as part of the winner's unbind write, at
-					// which point usbip-host's internal busid entry
-					// was gone for us. Expected, not an error.
-					warnf("%s", err)
-					continue
-				}
-				fatalf("%s", err)
-			}
 		}
 	case "attach":
 		remoteScript(ra)
+	case "import":
+		remoteImport(ra)
+	case "detach":
+		if err := importerDetach(strings.Fields(ra.Pattern)); err != nil {
+			fatalf("%s", err)
+		}
 	default:
 		fatalf("bad remote op %q", ra.Op)
 	}
@@ -130,7 +106,7 @@ func remoteScript(ra remoteArgs) {
 			return err
 		}
 		deb("accept on %s = %d", rpath, file.Fd())
-		if err := remoteAttach(int(file.Fd()), busid, !ra.NoUnmount); err != nil {
+		if err := exporterAttach(int(file.Fd()), busid, !ra.NoUnmount); err != nil {
 			file.Close()
 			return err
 		}
@@ -165,6 +141,60 @@ func remoteScript(ra remoteArgs) {
 	vhubLoop(pat, &socks, newDev)
 }
 
+// remoteImport is the payload's importer side for reverse attach. The local
+// exporter drives: it creates the -R forward to rpath and announces each
+// device with a "-Dev bus dev speed" line on our stdin. For each, we connect
+// back through the forward and hand the resulting fd to vhci. The loop ends
+// when stdin closes (the ssh channel is gone), at which point vhci tears the
+// ports down on its own.
+func remoteImport(ra remoteArgs) {
+	tmpdir, err := os.MkdirTemp("", progName+"-")
+	if err != nil {
+		remoteFatalf("%s", err)
+	}
+	remoteTmpdir = tmpdir
+	rpath := tmpdir + "/imp"
+	fmt.Printf("-Socket %s\n", rpath)
+
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "-Eof" {
+			break // oneshot: the device set is complete, so we can exit
+		}
+		rest, ok := strings.CutPrefix(line, "-Dev ")
+		if !ok {
+			deb("ignoring %q", line)
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) != 3 {
+			remoteFatalf("bad -Dev line: %s", rest)
+		}
+		bus, _ := strconv.Atoi(f[0])
+		dev, _ := strconv.Atoi(f[1])
+		deb("connect to %s", rpath)
+		conn, err := net.Dial("unix", rpath)
+		if err != nil {
+			remoteFatalf("connect to %s: %s", rpath, err)
+		}
+		file, err := conn.(*net.UnixConn).File()
+		conn.Close()
+		if err != nil {
+			remoteFatalf("%s", err)
+		}
+		if err := importerAttach(int(file.Fd()), bus, dev, f[2]); err != nil {
+			file.Close()
+			remoteFatalf("%s", err)
+		}
+		file.Close() // vhci holds its own reference to the socket
+	}
+	if err := sc.Err(); err != nil {
+		remoteFatalf("reading stdin: %s", err)
+	}
+	remoteCleanup()
+}
+
 // vhubLoop monitors uevents and attaches matching devices as they are
 // bound; when the ssh channel dies it hands the sockets to a linger child.
 func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev, speed string) error) {
@@ -196,7 +226,7 @@ func vhubLoop(pat *devPattern, socks *[]lingerSock, newDev func(busid, bus, dev,
 		for i, s := range *socks {
 			if pfds[2+i].Revents&(pollRDHUP|unix.POLLHUP|unix.POLLERR) != 0 {
 				busid := s.busid
-				xeval(func() error { return remoteDetach(busid) })
+				xeval(func() error { return exporterDetach(busid) })
 				s.file.Close()
 			} else {
 				keep = append(keep, s)
@@ -324,7 +354,7 @@ func lingerLoop(socks []lingerSock) {
 		for i, s := range socks {
 			if pfds[i].Revents&(pollRDHUP|unix.POLLHUP|unix.POLLERR) != 0 {
 				busid := s.busid
-				xeval(func() error { return remoteDetach(busid) })
+				xeval(func() error { return exporterDetach(busid) })
 				s.file.Close()
 			} else {
 				keep = append(keep, s)

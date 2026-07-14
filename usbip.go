@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // speed codes as per linux/usb/ch9.h, sysfs status values as per
@@ -88,7 +90,7 @@ func findVhciAndPort(speed int) (string, int, error) {
 	return "", 0, fmt.Errorf("no suitable vhci port found for speed = %d", speed)
 }
 
-func localAttach(sockfd, bus, dev int, speedStr string) error {
+func importerAttach(sockfd, bus, dev int, speedStr string) error {
 	hspeed := speedCode(speedStr)
 	vhci, port, err := findVhciAndPort(hspeed)
 	if err != nil {
@@ -98,7 +100,7 @@ func localAttach(sockfd, bus, dev int, speedStr string) error {
 		fmt.Sprintf("%d %d %d %d", port, sockfd, bus<<16|dev, hspeed))
 }
 
-func localDetach(args []string) error {
+func importerDetach(args []string) error {
 	want := map[string]bool{}
 	for _, a := range args {
 		want[a] = true
@@ -137,7 +139,7 @@ func localDetach(args []string) error {
 	return nil
 }
 
-func remoteAttach(sockfd int, busid string, unmount bool) error {
+func exporterAttach(sockfd int, busid string, unmount bool) error {
 	if readFile(devices()+"/"+busid+"/bDeviceClass") == "09" {
 		return fmt.Errorf("%s is a hub, and usbip-host cannot attach to a hub", busid)
 	}
@@ -172,7 +174,7 @@ func remoteAttach(sockfd int, busid string, unmount bool) error {
 	return xwriteFile(devices()+"/"+busid+"/usbip_sockfd", strconv.Itoa(sockfd))
 }
 
-// remoteDetach releases busid back to its normal driver: unbind it from
+// exporterDetach releases busid back to its normal driver: unbind it from
 // usbip-host, drop it from future auto-matching, and make sure it ends up
 // with a driver again.
 //
@@ -184,13 +186,48 @@ func remoteAttach(sockfd int, busid string, unmount bool) error {
 // internal busid entry first) and can occasionally leave the device
 // transiently driverless, so those steps are best-effort and settleDriver
 // falls back to a generic reprobe if the device hasn't settled.
-func remoteDetach(busid string) error {
+func exporterDetach(busid string) error {
 	if err := xwriteFile(drivers()+"/usbip-host/unbind", busid); err != nil {
 		return err
 	}
 	xeval(func() error { return xwriteFile(drivers()+"/usbip-host/match_busid", "del "+busid) })
 	xeval(func() error { return xwriteFile(drivers()+"/usbip-host/rebind", busid) })
 	return settleDriver(busid)
+}
+
+// unbindMatching releases every device matching pat that is bound to
+// usbip-host back to its normal driver. A vid:pid pattern can also match a
+// vhci-attached copy of the same device (notably when exporter and importer
+// are the same host); only devices actually bound to usbip-host are touched.
+func unbindMatching(pat *devPattern) error {
+	devs, err := findDev(pat, 1, false)
+	if err != nil {
+		return err
+	}
+	var bound []string
+	for _, busid := range devs {
+		status, _ := strconv.Atoi(readFile(drivers() + "/usbip-host/" + busid + "/usbip_status"))
+		if status != 0 {
+			bound = append(bound, busid)
+		}
+	}
+	if len(bound) == 0 {
+		return fmt.Errorf("no devices bound to usbip-host match '%s'", pat)
+	}
+	for _, busid := range bound {
+		if err := exporterDetach(busid); err != nil {
+			if errors.Is(err, unix.ENODEV) {
+				// Lost the race with the linger reacting to the same
+				// busid's hangup: the driver core already reprobed the
+				// device to its normal driver as part of the winner's
+				// unbind write. Expected, not an error.
+				warnf("%s", err)
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // settleDriver waits briefly for busid to have any driver bound, forcing

@@ -76,7 +76,7 @@ func TestFindVhciAndPort(t *testing.T) {
 
 func TestLocalAttach(t *testing.T) {
 	vhciFixture(t)
-	if err := localAttach(7, 1, 4, "12"); err != nil {
+	if err := importerAttach(7, 1, 4, "12"); err != nil {
 		t.Fatal(err)
 	}
 	got := readFile(sysfs + "/devices/platform/vhci_hcd.0/attach")
@@ -88,14 +88,14 @@ func TestLocalAttach(t *testing.T) {
 
 func TestLocalDetach(t *testing.T) {
 	vhciFixture(t)
-	if err := localDetach([]string{"1-1.4"}); err != nil {
+	if err := importerDetach([]string{"1-1.4"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(sysfs + "/devices/platform/vhci_hcd.0/detach"); got != "1" {
 		t.Errorf("detach = %q, want %q", got, "1")
 	}
-	if err := localDetach([]string{"9-9"}); err == nil {
-		t.Error("localDetach(9-9) should fail")
+	if err := importerDetach([]string{"9-9"}); err == nil {
+		t.Error("importerDetach(9-9) should fail")
 	}
 }
 
@@ -103,7 +103,7 @@ func TestRemoteAttachAvailable(t *testing.T) {
 	withFixtureSysfs(t)
 	// SDEV_ST_AVAILABLE: only the sockfd is written
 	mkFile(t, drivers()+"/usbip-host/1-1.4/usbip_status", "1")
-	if err := remoteAttach(7, "1-1.4", false); err != nil {
+	if err := exporterAttach(7, "1-1.4", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(devices() + "/1-1.4/usbip_sockfd"); got != "7" {
@@ -113,8 +113,8 @@ func TestRemoteAttachAvailable(t *testing.T) {
 
 func TestRemoteAttachHub(t *testing.T) {
 	withFixtureSysfs(t)
-	if err := remoteAttach(7, "1-1", false); err == nil {
-		t.Error("remoteAttach on a hub should fail")
+	if err := exporterAttach(7, "1-1", false); err == nil {
+		t.Error("exporterAttach on a hub should fail")
 	}
 }
 
@@ -123,7 +123,7 @@ func TestRemoteAttachUnbound(t *testing.T) {
 	// no usbip_status yet: device must be bound to usbip-host first;
 	// the usbip-host dir exists so modprobe is not attempted
 	mkFile(t, drivers()+"/usbip-host/bind", "")
-	if err := remoteAttach(7, "1-1.4", false); err != nil {
+	if err := exporterAttach(7, "1-1.4", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(drivers() + "/usbip-host/match_busid"); got != "add 1-1.4" {
@@ -137,6 +137,26 @@ func TestRemoteAttachUnbound(t *testing.T) {
 	}
 }
 
+func TestUnbindMatching(t *testing.T) {
+	withFixtureSysfs(t)
+	mkFile(t, drivers()+"/usbip-host/unbind", "")
+	if err := os.Symlink("usb", devices()+"/1-1.4/driver"); err != nil {
+		t.Fatal(err)
+	}
+	// no device bound to usbip-host yet: nothing matches
+	if err := unbindMatching(mustPattern("Telink")); err == nil {
+		t.Error("unbindMatching with nothing bound should fail")
+	}
+	// bind 1-1.4 to usbip-host and retry
+	mkFile(t, drivers()+"/usbip-host/1-1.4/usbip_status", "2")
+	if err := unbindMatching(mustPattern("Telink")); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(drivers() + "/usbip-host/unbind"); got != "1-1.4" {
+		t.Errorf("unbind = %q, want %q", got, "1-1.4")
+	}
+}
+
 func TestRemoteDetach(t *testing.T) {
 	withFixtureSysfs(t)
 	mkFile(t, drivers()+"/usbip-host/unbind", "")
@@ -145,7 +165,7 @@ func TestRemoteDetach(t *testing.T) {
 	if err := os.Symlink("usb", devices()+"/1-1.4/driver"); err != nil {
 		t.Fatal(err)
 	}
-	if err := remoteDetach("1-1.4"); err != nil {
+	if err := exporterDetach("1-1.4"); err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(drivers() + "/usbip-host/unbind"); got != "1-1.4" {
