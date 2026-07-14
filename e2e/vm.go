@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"crypto/sha512"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -129,6 +130,21 @@ type vm struct {
 	seedOff func()
 }
 
+// vmConfig fully describes one VM in the pair.
+type vmConfig struct {
+	dir     string
+	mem     int    // MiB
+	keyFile string // shared harness/inner private key (same file for both VMs)
+	pubKey  string // shared public key, trimmed
+	privB64 string // shared private key, base64 (injected into the guest)
+
+	// Exactly one of linkListen/linkConnect is set: the inter-VM socket NIC.
+	linkListen  string // "127.0.0.1:PORT" when this VM listens (dev)
+	linkConnect string // "127.0.0.1:PORT" when this VM connects (imp)
+	linkMAC     string // MAC of the inter-VM NIC, matched by cloud-init
+	linkIP      string // static IP for the inter-VM NIC, e.g. "10.0.9.1"
+}
+
 func freePort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -156,51 +172,52 @@ func checkPrereqs() error {
 	return nil
 }
 
-// bootVM boots the shared test VM and returns once it is fully
-// provisioned: reachable over ssh as root, cloud-init finished, QMP
-// connected, and the usbip-ssh binary under test installed.
-func bootVM(dir string) (*vm, error) {
-	if err := checkPrereqs(); err != nil {
+// startVM creates the run dir, overlay disk, and seed, then starts qemu.
+// It returns before the guest is reachable; call waitReady to block until
+// it is fully provisioned.
+func startVM(cfg vmConfig) (*vm, error) {
+	if err := os.MkdirAll(cfg.dir, 0o755); err != nil {
 		return nil, err
 	}
 	base, err := baseImage()
 	if err != nil {
 		return nil, err
 	}
-	disk := filepath.Join(dir, "disk.qcow2")
+	disk := filepath.Join(cfg.dir, "disk.qcow2")
 	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", "-b", base, "-F", "qcow2", disk).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("qemu-img create: %v: %s", err, out)
 	}
-	key := filepath.Join(dir, "id_ed25519")
-	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("ssh-keygen: %v: %s", err, out)
-	}
-	pub, err := os.ReadFile(key + ".pub")
+	seedPort, seedOff, err := seedServer(cfg.pubKey, cfg.privB64, cfg.linkMAC, cfg.linkIP)
 	if err != nil {
 		return nil, err
 	}
-	seedPort, seedOff, err := seedServer(strings.TrimSpace(string(pub)))
-	if err != nil {
-		return nil, err
-	}
-	v := &vm{dir: dir, keyFile: key, seedOff: seedOff}
+	v := &vm{dir: cfg.dir, keyFile: cfg.keyFile, seedOff: seedOff}
 	if v.sshPort, err = freePort(); err != nil {
 		seedOff()
 		return nil, err
 	}
-	qmpSock := filepath.Join(dir, "qmp.sock")
+	link := "socket,id=n1,"
+	if cfg.linkListen != "" {
+		link += "listen=" + cfg.linkListen
+	} else {
+		link += "connect=" + cfg.linkConnect
+	}
+	qmpSock := filepath.Join(cfg.dir, "qmp.sock")
 	qemu := exec.Command("qemu-system-x86_64",
-		"-M", "q35", "-enable-kvm", "-cpu", "host", "-smp", "2", "-m", "1024",
+		"-M", "q35", "-enable-kvm", "-cpu", "host", "-smp", "2",
+		"-m", strconv.Itoa(cfg.mem),
 		"-display", "none",
 		"-smbios", fmt.Sprintf("type=1,serial=ds=nocloud;s=http://10.0.2.2:%d/", seedPort),
 		"-drive", "file="+disk+",if=virtio,format=qcow2",
 		"-netdev", fmt.Sprintf("user,id=n0,hostfwd=tcp:127.0.0.1:%d-:22", v.sshPort),
 		"-device", "virtio-net-pci,netdev=n0",
+		"-netdev", link,
+		"-device", "virtio-net-pci,netdev=n1,mac="+cfg.linkMAC,
 		"-device", "qemu-xhci,id=xhci",
 		"-qmp", "unix:"+qmpSock+",server,wait=off",
-		"-serial", "file:"+filepath.Join(dir, "console.log"),
+		"-serial", "file:"+filepath.Join(cfg.dir, "console.log"),
 	)
-	qlog, err := os.Create(filepath.Join(dir, "qemu.log"))
+	qlog, err := os.Create(filepath.Join(cfg.dir, "qemu.log"))
 	if err != nil {
 		seedOff()
 		return nil, err
@@ -211,12 +228,18 @@ func bootVM(dir string) (*vm, error) {
 		return nil, fmt.Errorf("starting qemu: %v", err)
 	}
 	v.qemu = qemu
-	fail := func(err error) (*vm, error) {
+	log.Printf("e2e: started VM (ssh port %d, run dir %s)", v.sshPort, cfg.dir)
+	return v, nil
+}
+
+// waitReady blocks until the guest is reachable over ssh, cloud-init has
+// finished, QMP is connected, and the usbip-ssh binary is installed.
+func (v *vm) waitReady() error {
+	fail := func(err error) error {
 		v.teardown()
-		return nil, err
+		return err
 	}
-	log.Printf("e2e: booting VM (ssh port %d, run dir %s)", v.sshPort, dir)
-	err = waitFor("ssh into the VM", 5*time.Minute, func() (bool, error) {
+	err := waitFor("ssh into the VM", 5*time.Minute, func() (bool, error) {
 		out, err := v.ssh("true")
 		if err != nil {
 			return false, fmt.Errorf("%v: %s", err, out)
@@ -233,13 +256,75 @@ func bootVM(dir string) (*vm, error) {
 			return fail(fmt.Errorf("cloud-init: %v: %s", err, out))
 		}
 	}
-	if v.qmp, err = qmpConnect(qmpSock); err != nil {
-		return fail(err)
+	var qerr error
+	if v.qmp, qerr = qmpConnect(filepath.Join(v.dir, "qmp.sock")); qerr != nil {
+		return fail(qerr)
 	}
 	if out, err := v.scp(distBinary, "/usr/local/bin/usbip-ssh"); err != nil {
 		return fail(fmt.Errorf("installing %s: %v: %s", distBinary, err, out))
 	}
-	return v, nil
+	return nil
+}
+
+// bootPair boots the dev/imp VM pair on a private socket network with a
+// shared root ssh key. dev (the socket listener) starts first so its link
+// socket is open before imp connects; both guests then provision in parallel.
+func bootPair(dir string) (*pair, error) {
+	if err := checkPrereqs(); err != nil {
+		return nil, err
+	}
+	key := filepath.Join(dir, "id_ed25519")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("ssh-keygen: %v: %s", err, out)
+	}
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		return nil, err
+	}
+	privRaw, err := os.ReadFile(key)
+	if err != nil {
+		return nil, err
+	}
+	privB64 := base64.StdEncoding.EncodeToString(privRaw)
+	linkPort, err := freePort()
+	if err != nil {
+		return nil, err
+	}
+	linkAddr := fmt.Sprintf("127.0.0.1:%d", linkPort)
+	common := vmConfig{mem: 256, keyFile: key, pubKey: strings.TrimSpace(string(pub)), privB64: privB64}
+
+	devCfg := common
+	devCfg.dir, devCfg.linkListen, devCfg.linkMAC, devCfg.linkIP =
+		filepath.Join(dir, "dev"), linkAddr, "52:54:00:00:09:01", devIP
+	impCfg := common
+	impCfg.dir, impCfg.linkConnect, impCfg.linkMAC, impCfg.linkIP =
+		filepath.Join(dir, "imp"), linkAddr, "52:54:00:00:09:02", impIP
+
+	dev, err := startVM(devCfg) // listener first
+	if err != nil {
+		return nil, err
+	}
+	imp, err := startVM(impCfg)
+	if err != nil {
+		dev.teardown()
+		return nil, err
+	}
+	errc := make(chan error, 2)
+	go func() { errc <- dev.waitReady() }()
+	go func() { errc <- imp.waitReady() }()
+	var firstErr error
+	for i := 0; i < 2; i++ {
+		if e := <-errc; e != nil && firstErr == nil {
+			firstErr = e
+		}
+	}
+	if firstErr != nil {
+		// waitReady already tore down the failing VM; tear down the other.
+		dev.teardown()
+		imp.teardown()
+		return nil, firstErr
+	}
+	return &pair{dev: dev, imp: imp}, nil
 }
 
 func (v *vm) sshOpts() []string {

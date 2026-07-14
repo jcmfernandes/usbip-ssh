@@ -27,7 +27,7 @@ func get(t *testing.T, port int, path string) (int, string) {
 }
 
 func TestSeedServer(t *testing.T) {
-	port, shutdown, err := seedServer(testKey)
+	port, shutdown, err := seedServer(testKey, "QUJD", "52:54:00:00:09:01", "10.0.9.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestSeedServer(t *testing.T) {
 	if !strings.HasPrefix(body, "#cloud-config\n") {
 		t.Errorf("user-data must start with #cloud-config, got: %.40q", body)
 	}
-	for _, want := range []string{testKey, "disable_root: false", "StrictHostKeyChecking accept-new", "ssh-keygen -t ed25519"} {
+	for _, want := range []string{testKey, "disable_root: false", "StrictHostKeyChecking accept-new", "encoding: b64", "10.0.9.1/24"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("user-data missing %q", want)
 		}

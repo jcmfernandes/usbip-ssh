@@ -11,24 +11,33 @@ import (
 	"time"
 )
 
-var (
-	runDir string
-	vmOnce sync.Once
-	vmInst *vm
-	vmErr  error
+const (
+	devIP = "10.0.9.1"
+	impIP = "10.0.9.2"
 )
 
-// sharedVM lazily boots the single VM shared by all scenario tests.
-// Unit tests that don't call it never require qemu.
-func sharedVM(t *testing.T) *vm {
+type pair struct {
+	dev *vm
+	imp *vm
+}
+
+var (
+	runDir   string
+	pairOnce sync.Once
+	pairInst *pair
+	pairErr  error
+)
+
+// sharedPair lazily boots the dev/imp VM pair shared by all scenario tests.
+func sharedPair(t *testing.T) *pair {
 	t.Helper()
-	vmOnce.Do(func() {
-		vmInst, vmErr = bootVM(runDir)
+	pairOnce.Do(func() {
+		pairInst, pairErr = bootPair(runDir)
 	})
-	if vmErr != nil {
-		t.Fatalf("VM boot: %v", vmErr)
+	if pairErr != nil {
+		t.Fatalf("VM pair boot: %v", pairErr)
 	}
-	return vmInst
+	return pairInst
 }
 
 func TestMain(m *testing.M) {
@@ -39,28 +48,37 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	code := m.Run()
-	if vmInst != nil {
-		vmInst.teardown()
+	if pairInst != nil {
+		pairInst.dev.teardown()
+		pairInst.imp.teardown()
 	}
-	if code == 0 && vmErr == nil {
+	if code == 0 && pairErr == nil {
 		os.RemoveAll(runDir)
 	} else {
-		fmt.Fprintf(os.Stderr, "e2e: VM artifacts kept in %s (console.log, qemu.log)\n", runDir)
+		fmt.Fprintf(os.Stderr, "e2e: VM artifacts kept in %s (dev/, imp/)\n", runDir)
 	}
 	os.Exit(code)
 }
 
-func TestVMBoot(t *testing.T) {
-	v := sharedVM(t)
-	out, err := v.ssh("uname -r")
-	if err != nil || strings.TrimSpace(out) == "" {
-		t.Fatalf("uname: %v: %s", err, out)
+func TestPairBoot(t *testing.T) {
+	p := sharedPair(t)
+	for name, v := range map[string]*vm{"dev": p.dev, "imp": p.imp} {
+		if out, err := v.ssh("uname -r"); err != nil || strings.TrimSpace(out) == "" {
+			t.Fatalf("[%s] uname: %v: %s", name, err, out)
+		}
+		if out, err := v.ssh("modinfo usbip-host vhci-hcd >/dev/null && echo ok"); err != nil || !strings.Contains(out, "ok") {
+			t.Fatalf("[%s] guest kernel lacks usbip modules: %v: %s", name, err, out)
+		}
+		if out, err := v.ssh("usbip-ssh list --local"); err != nil {
+			t.Fatalf("[%s] usbip-ssh binary doesn't run: %v: %s", name, err, out)
+		}
 	}
-	if out, err := v.ssh("modinfo usbip-host vhci-hcd >/dev/null && echo ok"); err != nil || !strings.Contains(out, "ok") {
-		t.Fatalf("guest kernel lacks usbip modules: %v: %s", err, out)
+	// The whole point of the pair: each VM can ssh the other over the link.
+	if out, err := p.dev.ssh("ssh -o BatchMode=yes -o ConnectTimeout=5 root@" + impIP + " true"); err != nil {
+		t.Fatalf("dev->imp ssh over link failed: %v: %s", err, out)
 	}
-	if out, err := v.ssh("usbip-ssh list --local"); err != nil {
-		t.Fatalf("usbip-ssh binary doesn't run in the guest: %v: %s", err, out)
+	if out, err := p.imp.ssh("ssh -o BatchMode=yes -o ConnectTimeout=5 root@" + devIP + " true"); err != nil {
+		t.Fatalf("imp->dev ssh over link failed: %v: %s", err, out)
 	}
 }
 
@@ -118,270 +136,38 @@ func mustWait(t *testing.T, desc string, timeout time.Duration, cond func() (boo
 	}
 }
 
-// resetState returns the guest to a clean slate: nothing attached, no
-// emulated keyboards plugged in.
-func resetState(t *testing.T, v *vm) {
-	t.Helper()
-	t.Cleanup(func() {
-		if t.Failed() {
-			out, _ := v.ssh("echo '--- usb devices:'; " + lsDevs + "; echo '--- dmesg tail:'; dmesg | tail -30; echo '--- logs:'; tail -n +1 /tmp/*.log 2>/dev/null")
-			t.Logf("guest state after failure:\n%s", out)
-		}
-	})
-	v.ssh("usbip-ssh detach all") // error ignored: nothing may be attached
-	v.qmp.deviceDel("kbd0")       // error ignored: may not be plugged
-	v.qmp.deviceDel("kbd1")
-	mustWait(t, "guest to quiesce", 30*time.Second, func() (bool, error) {
-		devs, err := v.usbDevs()
-		if err != nil {
-			return false, err
-		}
-		vh, norm := kbds(devs)
-		return len(vh) == 0 && len(norm) == 0, nil
-	})
-}
-
-// plugKbd hot-plugs an emulated keyboard and waits for the guest to see it.
-func plugKbd(t *testing.T, v *vm, id string, wantNormal int) {
-	t.Helper()
-	if err := v.qmp.deviceAdd("usb-kbd", id); err != nil {
-		t.Fatalf("device_add %s: %v", id, err)
-	}
-	mustWait(t, fmt.Sprintf("keyboard %s visible in the guest", id), 30*time.Second, func() (bool, error) {
-		devs, err := v.usbDevs()
-		if err != nil {
-			return false, err
-		}
-		_, norm := kbds(devs)
-		return len(norm) == wantNormal, nil
-	})
-}
-
 func TestList(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	out, err := v.ssh("usbip-ssh list root@localhost")
-	if err != nil {
-		t.Fatalf("list root@localhost: %v: %s", err, out)
-	}
-	if !strings.Contains(out, kbdID) {
-		t.Errorf("remote list missing %s:\n%s", kbdID, out)
-	}
-
-	out, err = v.ssh("usbip-ssh list --local")
-	if err != nil {
-		t.Fatalf("list --local: %v: %s", err, out)
-	}
-	if !strings.Contains(out, kbdID) {
-		t.Errorf("local list missing %s:\n%s", kbdID, out)
-	}
-}
-
-// attachedKbds reports how many keyboards are vhci-attached, with their
-// exported originals bound to usbip-host.
-func attachedKbds(v *vm, want int) func() (bool, error) {
-	return func() (bool, error) {
-		devs, err := v.usbDevs()
-		if err != nil {
-			return false, err
-		}
-		vh, norm := kbds(devs)
-		if len(vh) != want || len(norm) != want {
-			return false, fmt.Errorf("%d vhci / %d normal keyboards, want %d/%d", len(vh), len(norm), want, want)
-		}
-		for _, d := range norm {
-			if d.driver != "usbip-host" {
-				return false, fmt.Errorf("exported keyboard %s bound to %q, want usbip-host", d.busid, d.driver)
-			}
-		}
-		return true, nil
-	}
-}
-
-// releasedKbds reports that no keyboard is vhci-attached and count
-// keyboards are back on the normal usb driver.
-func releasedKbds(v *vm, count int) func() (bool, error) {
-	return func() (bool, error) {
-		devs, err := v.usbDevs()
-		if err != nil {
-			return false, err
-		}
-		vh, norm := kbds(devs)
-		if len(vh) != 0 || len(norm) != count {
-			return false, fmt.Errorf("%d vhci / %d normal keyboards, want 0/%d", len(vh), len(norm), count)
-		}
-		for _, d := range norm {
-			if d.driver != "usb" {
-				return false, fmt.Errorf("keyboard %s bound to %q, want usb", d.busid, d.driver)
-			}
-		}
-		return true, nil
-	}
+	t.Skip("pending two-VM conversion (Task 2)")
 }
 
 func TestAttachDetach(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v attach root@localhost "+kbdID, "/tmp/attach.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "keyboard to attach via vhci", 60*time.Second, attachedKbds(v, 1))
-
-	if out, err := v.ssh("usbip-ssh detach all"); err != nil {
-		t.Fatalf("detach all: %v: %s", err, out)
-	}
-	mustWait(t, "keyboard to rebind to its usb driver", 60*time.Second, releasedKbds(v, 1))
+	t.Skip("pending two-VM conversion (Task 2)")
 }
 
 func TestUnbind(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v attach root@localhost "+kbdID, "/tmp/attach.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "keyboard to attach via vhci", 60*time.Second, attachedKbds(v, 1))
-
-	if out, err := v.ssh("usbip-ssh -v unbind root@localhost " + kbdID); err != nil {
-		t.Fatalf("unbind: %v: %s", err, out)
-	}
-	mustWait(t, "keyboard to return to its usb driver", 60*time.Second, releasedKbds(v, 1))
+	t.Skip("pending two-VM conversion (Task 2)")
 }
 
 func TestVhubHotAttach(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v attach --vhub root@localhost "+kbdID, "/tmp/vhub.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "first keyboard to attach", 60*time.Second, attachedKbds(v, 1))
-
-	// hot-plug a second matching keyboard while --vhub is watching
-	if err := v.qmp.deviceAdd("usb-kbd", "kbd1"); err != nil {
-		t.Fatalf("device_add kbd1: %v", err)
-	}
-	mustWait(t, "second keyboard to hot-attach", 60*time.Second, attachedKbds(v, 2))
-
-	// killing the whole session must release and rebind both devices
-	v.killBg(pg)
-	mustWait(t, "both keyboards to rebind after the session dies", 60*time.Second, releasedKbds(v, 2))
-}
-
-// Reverse mode (-r) exports a local device to HOST: the local machine is the
-// exporter and HOST the importer. Against root@localhost the guest exports its
-// keyboard to itself, so the observable end state — a vhci copy plus the
-// original bound to usbip-host — is identical to forward mode.
-
-func TestReverseAttachDetach(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v attach -r root@localhost "+kbdID, "/tmp/rattach.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "keyboard to reverse-attach via vhci", 60*time.Second, attachedKbds(v, 1))
-
-	// reverse detach tears down the importer's (HOST's) vhci port
-	if out, err := v.ssh("usbip-ssh -v detach -r root@localhost all"); err != nil {
-		t.Fatalf("detach -r all: %v: %s", err, out)
-	}
-	mustWait(t, "keyboard to rebind to its usb driver", 60*time.Second, releasedKbds(v, 1))
-}
-
-func TestReverseUnbind(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v attach -r root@localhost "+kbdID, "/tmp/rattach.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "keyboard to reverse-attach via vhci", 60*time.Second, attachedKbds(v, 1))
-
-	// reverse unbind releases the local exporter device directly, no ssh
-	if out, err := v.ssh("usbip-ssh -v unbind -r " + kbdID); err != nil {
-		t.Fatalf("unbind -r: %v: %s", err, out)
-	}
-	mustWait(t, "keyboard to return to its usb driver", 60*time.Second, releasedKbds(v, 1))
-}
-
-func TestReverseVhubHotAttach(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v attach -r --vhub root@localhost "+kbdID, "/tmp/rvhub.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "first keyboard to reverse-attach", 60*time.Second, attachedKbds(v, 1))
-
-	// hot-plug a second matching keyboard while --vhub is watching locally
-	if err := v.qmp.deviceAdd("usb-kbd", "kbd1"); err != nil {
-		t.Fatalf("device_add kbd1: %v", err)
-	}
-	mustWait(t, "second keyboard to hot-attach", 60*time.Second, attachedKbds(v, 2))
-
-	// killing the whole session must release and rebind both devices
-	v.killBg(pg)
-	mustWait(t, "both keyboards to rebind after the session dies", 60*time.Second, releasedKbds(v, 2))
-}
-
-func TestReverseKeepReconnect(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
-
-	pg := v.startBg(t, "usbip-ssh -v keep -r root@localhost "+kbdID, "/tmp/rkeep.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "keyboard to reverse-attach", 60*time.Second, attachedKbds(v, 1))
-
-	// unplug: the connection collapses and keep enters its retry loop
-	if err := v.qmp.deviceDel("kbd0"); err != nil {
-		t.Fatalf("device_del kbd0: %v", err)
-	}
-	mustWait(t, "keyboard to disappear", 60*time.Second, func() (bool, error) {
-		devs, err := v.usbDevs()
-		if err != nil {
-			return false, err
-		}
-		vh, norm := kbds(devs)
-		return len(vh) == 0 && len(norm) == 0, nil
-	})
-
-	// replug: keep's backoff loop must re-attach without being restarted
-	if err := v.qmp.deviceAdd("usb-kbd", "kbd0"); err != nil {
-		t.Fatalf("device_add kbd0: %v", err)
-	}
-	mustWait(t, "keep to re-attach the keyboard", 3*time.Minute, attachedKbds(v, 1))
+	t.Skip("pending two-VM conversion (Task 2)")
 }
 
 func TestKeepReconnect(t *testing.T) {
-	v := sharedVM(t)
-	resetState(t, v)
-	plugKbd(t, v, "kbd0", 1)
+	t.Skip("pending two-VM conversion (Task 2)")
+}
 
-	pg := v.startBg(t, "usbip-ssh -v keep root@localhost "+kbdID, "/tmp/keep.log")
-	t.Cleanup(func() { v.killBg(pg) })
-	mustWait(t, "keyboard to attach", 60*time.Second, attachedKbds(v, 1))
+func TestReverseAttachDetach(t *testing.T) {
+	t.Skip("pending two-VM conversion (Task 3)")
+}
 
-	// unplug: the connection collapses and keep enters its retry loop
-	if err := v.qmp.deviceDel("kbd0"); err != nil {
-		t.Fatalf("device_del kbd0: %v", err)
-	}
-	mustWait(t, "keyboard to disappear", 60*time.Second, func() (bool, error) {
-		devs, err := v.usbDevs()
-		if err != nil {
-			return false, err
-		}
-		vh, norm := kbds(devs)
-		return len(vh) == 0 && len(norm) == 0, nil
-	})
+func TestReverseUnbind(t *testing.T) {
+	t.Skip("pending two-VM conversion (Task 3)")
+}
 
-	// replug: keep's backoff loop must re-attach without being restarted
-	if err := v.qmp.deviceAdd("usb-kbd", "kbd0"); err != nil {
-		t.Fatalf("device_add kbd0: %v", err)
-	}
-	mustWait(t, "keep to re-attach the keyboard", 3*time.Minute, attachedKbds(v, 1))
+func TestReverseVhubHotAttach(t *testing.T) {
+	t.Skip("pending two-VM conversion (Task 3)")
+}
+
+func TestReverseKeepReconnect(t *testing.T) {
+	t.Skip("pending two-VM conversion (Task 3)")
 }
