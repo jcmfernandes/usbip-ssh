@@ -55,7 +55,7 @@ jobs:
           report_paths: "junitreport.xml"
           check_name: "test report / unit"
 
-      - if: ${{ (github.ref_name == github.event.repository.default_branch || steps.go-restore-caches.outputs.cache_hit == 'false') && (success() || failure()) }}
+      - if: ${{ steps.go-restore-caches.outputs.cache_hit == 'false' && (success() || failure()) }}
         uses: "bckground/actions/cache-go/save@main"
         with:
           cache-backend: "github"
@@ -111,7 +111,7 @@ jobs:
           report_paths: "junitreport.xml"
           check_name: "test report / e2e"
 
-      - if: ${{ (github.ref_name == github.event.repository.default_branch || steps.go-restore-caches.outputs.cache_hit == 'false') && (success() || failure()) }}
+      - if: ${{ steps.go-restore-caches.outputs.cache_hit == 'false' && (success() || failure()) }}
         uses: "bckground/actions/cache-go/save@main"
         with:
           cache-backend: "github"

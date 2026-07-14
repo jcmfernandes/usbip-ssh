@@ -34,7 +34,7 @@ jobs:
         run: |
           goreleaser release --clean
 
-      - if: ${{ (github.ref_name == github.event.repository.default_branch || steps.go-restore-caches.outputs.cache_hit == 'false') && (success() || failure()) }}
+      - if: ${{ steps.go-restore-caches.outputs.cache_hit == 'false' && (success() || failure()) }}
         uses: "bckground/actions/cache-go/save@main"
         with:
           cache-backend: "github"
