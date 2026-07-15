@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +19,73 @@ import (
 
 // payloadFor is payloadBytes behind a var so tests can inject a payload.
 var payloadFor = payloadBytes
+
+// With --ssh-user the ssh children are dropped to that user so they use that
+// user's ssh config, agent and known_hosts, while usbip-ssh itself stays root
+// for the usbip sysfs writes. sshCred/sshEnv are applied to every ssh we
+// spawn; sshUID/sshGID hand our temp sockets over to it.
+var (
+	sshUID  int
+	sshGID  int
+	sshCred *syscall.SysProcAttr
+	sshEnv  []string
+)
+
+// setupSSHUser resolves --ssh-user into the credential and environment the
+// ssh children run under. Only ssh drops privileges, not usbip-ssh itself.
+func setupSSHUser(name string) error {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return err
+	}
+	if sshUID, err = strconv.Atoi(u.Uid); err != nil {
+		return fmt.Errorf("uid %q: %w", u.Uid, err)
+	}
+	if sshGID, err = strconv.Atoi(u.Gid); err != nil {
+		return fmt.Errorf("gid %q: %w", u.Gid, err)
+	}
+	sshCred = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: uint32(sshUID), Gid: uint32(sshGID)},
+	}
+	// ssh finds its config, known_hosts and default agent through these.
+	sshEnv = []string{"HOME=" + u.HomeDir, "USER=" + u.Username, "LOGNAME=" + u.Username}
+	return nil
+}
+
+// applySSHCred makes an ssh invocation run as --ssh-user, if set.
+func applySSHCred(cmd *exec.Cmd) {
+	if sshCred == nil {
+		return
+	}
+	cmd.SysProcAttr = sshCred
+	// exec keeps the last value of a duplicate key, so sshEnv overrides the
+	// HOME/USER we inherited from sudo. SSH_AUTH_SOCK passes through as-is.
+	cmd.Env = append(os.Environ(), sshEnv...)
+}
+
+// chownForSSH hands path to --ssh-user so the ssh client, running as that
+// user, can create or connect to the sockets we keep in our temp dir.
+func chownForSSH(path string) error {
+	if sshCred == nil {
+		return nil
+	}
+	return os.Chown(path, sshUID, sshGID)
+}
+
+// sshSystem runs an ssh control-master command (ssh -O ...). It must run as
+// --ssh-user too: the mux master checks the connecting peer's uid and refuses
+// a mismatch, so a root-run -O forward could not talk to a user-run master.
+func sshSystem(argv ...string) error {
+	deb("EXEC %s", strings.Join(argv, " "))
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	applySSHCred(cmd)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("system %s: %w", strings.Join(argv, " "), err)
+	}
+	return nil
+}
 
 // bootstrap runs on the remote host under its login shell. It reports the
 // architecture, then reads the payload size, the JSON argument line and
@@ -136,6 +204,7 @@ func dialRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, e
 	argv = append(argv, host, remoteBootstrap())
 	deb("EXEC %s", strings.Join(argv, " "))
 	cmd := exec.Command(argv[0], argv[1:]...)
+	applySSHCred(cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -249,6 +318,9 @@ func runAttach(host, pattern string, o attachOpts) (int, error) {
 		return 0, err
 	}
 	defer os.RemoveAll(tmpdir)
+	if err := chownForSSH(tmpdir); err != nil {
+		return 0, err
+	}
 	ctl, lpath := tmpdir+"/ctl", tmpdir+"/vhci"
 	ra := remoteArgs{Op: "attach", Pattern: pattern, Vhub: o.vhub,
 		NoUnmount: o.noUnmount, NoLinger: o.noLinger, Verbose: verbose}
@@ -270,11 +342,11 @@ loop:
 		switch {
 		case strings.HasPrefix(line, "-Socket "):
 			rpath := strings.TrimPrefix(line, "-Socket ")
-			if err := xsystem(sshCmd[0], "-S", ctl, "-O", "forward",
+			if err := sshSystem(sshCmd[0], "-S", ctl, "-O", "forward",
 				"-L", lpath+":"+rpath, host); err != nil {
 				return 0, err
 			}
-			if err := xsystem(sshCmd[0], "-S", ctl, "-q", "-O", "stop", host); err != nil {
+			if err := sshSystem(sshCmd[0], "-S", ctl, "-q", "-O", "stop", host); err != nil {
 				return 0, err
 			}
 		case strings.HasPrefix(line, "-Dev "):

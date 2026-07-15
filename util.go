@@ -27,6 +27,7 @@ var (
 	sudo       bool
 	sudoPrompt bool
 	sudoPass   string
+	sshUser    string
 	logf       = func(pri int, msg string) { fmt.Fprint(os.Stderr, msg) }
 )
 

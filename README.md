@@ -42,7 +42,8 @@ jump'` to choose the ssh command (like rsync's `-e`); `--sysfs PATH`;
 `--modprobe PATH`; `--sudo` to run the remote payload under `sudo -n` so you
 can connect to HOST as a non-root user that has NOPASSWD sudo; `--sudo-prompt`
 like `--sudo` but prompts locally for the remote sudo password instead of
-requiring NOPASSWD.
+requiring NOPASSWD; `--ssh-user USER` runs the ssh client as USER, so that
+under `sudo` ssh uses your config, agent and known_hosts rather than root's.
 
 Attach flags (after the command): `-r`/`--reverse` exports a local device
 to HOST (see above); `--vhub` keeps monitoring for matching devices and

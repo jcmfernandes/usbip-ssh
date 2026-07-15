@@ -60,12 +60,18 @@ func runReverseAttach(host, pattern string, o attachOpts) (int, error) {
 		return 0, err
 	}
 	defer os.RemoveAll(tmpdir)
+	if err := chownForSSH(tmpdir); err != nil {
+		return 0, err
+	}
 	ctl, lpath := tmpdir+"/ctl", tmpdir+"/exp"
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: lpath, Net: "unix"})
 	if err != nil {
 		return 0, fmt.Errorf("listen on %s: %w", lpath, err)
 	}
 	defer l.Close()
+	if err := chownForSSH(lpath); err != nil {
+		return 0, err
+	}
 
 	s, err := startRemote([]string{"-S", ctl, "-M"}, host,
 		remoteArgs{Op: "import", Verbose: verbose})
@@ -87,11 +93,11 @@ func runReverseAttach(host, pattern string, o attachOpts) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := xsystem(sshCmd[0], "-S", ctl, "-O", "forward",
+	if err := sshSystem(sshCmd[0], "-S", ctl, "-O", "forward",
 		"-R", rpath+":"+lpath, host); err != nil {
 		return 0, err
 	}
-	if err := xsystem(sshCmd[0], "-S", ctl, "-q", "-O", "stop", host); err != nil {
+	if err := sshSystem(sshCmd[0], "-S", ctl, "-q", "-O", "stop", host); err != nil {
 		return 0, err
 	}
 

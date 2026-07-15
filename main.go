@@ -53,6 +53,9 @@ global flags (before the command):
                        sudo on HOST; lets you connect as a non-root user)
   --sudo-prompt        like --sudo, but prompt locally for the remote sudo
                        password instead of requiring NOPASSWD
+  --ssh-user USER      run the ssh client as USER instead of root. Under sudo
+                       ssh would otherwise use root's ~/.ssh; this makes it use
+                       USER's config, agent and known_hosts
 
 attach/keep/daemon flags (after the command):
   -r, --reverse        export a local device to HOST (roles reversed)
@@ -138,6 +141,7 @@ func main() {
 	gfs.StringVar(&modprobe, "modprobe", "modprobe", "modprobe command")
 	gfs.BoolVar(&sudo, "sudo", false, "run the remote payload under sudo -n")
 	gfs.BoolVar(&sudoPrompt, "sudo-prompt", false, "run the remote payload under sudo, prompting locally for the password")
+	gfs.StringVar(&sshUser, "ssh-user", "", "run the ssh client as this user")
 	gfs.Parse(os.Args[1:])
 	if *showVersion {
 		fmt.Println(progName, version)
@@ -149,6 +153,14 @@ func main() {
 	}
 	if sudo && sudoPrompt {
 		fatalf("use either --sudo or --sudo-prompt, not both")
+	}
+	if sshUser != "" {
+		if os.Geteuid() != 0 {
+			fatalf("--ssh-user needs root: run %s under sudo", progName)
+		}
+		if err := setupSSHUser(sshUser); err != nil {
+			fatalf("--ssh-user %s: %s", sshUser, err)
+		}
 	}
 	args := gfs.Args()
 	if len(args) == 0 {

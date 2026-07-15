@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os/exec"
+	"os/user"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -42,6 +45,54 @@ func TestRemoteBootstrap(t *testing.T) {
 	sudo, sudoPrompt = false, true
 	if got := remoteBootstrap(); got != "LC_ALL=C sudo -S -k -p '' -- "+bootstrap {
 		t.Errorf("with --sudo-prompt: got %q, want sudo -S wrapped bootstrap", got)
+	}
+}
+
+func TestSetupSSHUser(t *testing.T) {
+	oldCred, oldEnv, oldUID, oldGID := sshCred, sshEnv, sshUID, sshGID
+	t.Cleanup(func() { sshCred, sshEnv, sshUID, sshGID = oldCred, oldEnv, oldUID, oldGID })
+
+	u, err := user.Current()
+	if err != nil {
+		t.Skip("no current user to resolve")
+	}
+	if err := setupSSHUser(u.Username); err != nil {
+		t.Fatalf("setupSSHUser(%q): %v", u.Username, err)
+	}
+	if sshCred == nil || sshCred.Credential == nil {
+		t.Fatal("setupSSHUser did not set the ssh credential")
+	}
+	if got := strconv.Itoa(sshUID); got != u.Uid {
+		t.Errorf("sshUID = %s, want %s", got, u.Uid)
+	}
+	if got := int(sshCred.Credential.Uid); strconv.Itoa(got) != u.Uid {
+		t.Errorf("credential uid = %d, want %s", got, u.Uid)
+	}
+	var gotHome bool
+	for _, e := range sshEnv {
+		if e == "HOME="+u.HomeDir {
+			gotHome = true
+		}
+	}
+	if !gotHome {
+		t.Errorf("sshEnv %q lacks HOME=%s", sshEnv, u.HomeDir)
+	}
+
+	// applySSHCred is a no-op unless --ssh-user resolved.
+	cmd := exec.Command("true")
+	applySSHCred(cmd)
+	if cmd.SysProcAttr == nil {
+		t.Error("applySSHCred did not set SysProcAttr with --ssh-user")
+	}
+	sshCred = nil
+	cmd = exec.Command("true")
+	applySSHCred(cmd)
+	if cmd.SysProcAttr != nil || cmd.Env != nil {
+		t.Error("applySSHCred touched cmd without --ssh-user")
+	}
+
+	if err := setupSSHUser("no-such-user-hopefully-xyzzy"); err == nil {
+		t.Error("setupSSHUser accepted an unknown user")
 	}
 }
 
