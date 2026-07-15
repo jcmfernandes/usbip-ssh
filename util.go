@@ -20,11 +20,14 @@ const (
 )
 
 var (
-	verbose  bool
-	sysfs    = "/sys"
-	modprobe = "modprobe"
-	sshCmd   = []string{"ssh"}
-	logf     = func(pri int, msg string) { fmt.Fprint(os.Stderr, msg) }
+	verbose    bool
+	sysfs      = "/sys"
+	modprobe   = "modprobe"
+	sshCmd     = []string{"ssh"}
+	sudo       bool
+	sudoPrompt bool
+	sudoPass   string
+	logf       = func(pri int, msg string) { fmt.Fprint(os.Stderr, msg) }
 )
 
 func drivers() string { return sysfs + "/bus/usb/drivers" }

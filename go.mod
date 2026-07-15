@@ -3,3 +3,5 @@ module github.com/jcmfernandes/usbip-ssh
 go 1.26
 
 require golang.org/x/sys v0.47.0
+
+require golang.org/x/term v0.45.0

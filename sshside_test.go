@@ -25,6 +25,51 @@ func TestCopyOutput(t *testing.T) {
 	}
 }
 
+func TestRemoteBootstrap(t *testing.T) {
+	oldSudo, oldPrompt := sudo, sudoPrompt
+	t.Cleanup(func() { sudo, sudoPrompt = oldSudo, oldPrompt })
+
+	sudo, sudoPrompt = false, false
+	if got := remoteBootstrap(); got != bootstrap {
+		t.Errorf("without --sudo: got %q, want the plain bootstrap", got)
+	}
+
+	sudo, sudoPrompt = true, false
+	if got := remoteBootstrap(); got != "LC_ALL=C sudo -n -- "+bootstrap {
+		t.Errorf("with --sudo: got %q, want sudo-wrapped bootstrap", got)
+	}
+
+	sudo, sudoPrompt = false, true
+	if got := remoteBootstrap(); got != "LC_ALL=C sudo -S -k -p '' -- "+bootstrap {
+		t.Errorf("with --sudo-prompt: got %q, want sudo -S wrapped bootstrap", got)
+	}
+}
+
+func TestSudoFailRe(t *testing.T) {
+	fails := []string{
+		"Sorry, try again.",
+		"sudo: 1 incorrect password attempt",
+		"sudo: a password is required",
+		"sudo: no password was provided",
+		"pam_unix(sudo:auth): authentication failure; logname=...",
+	}
+	for _, s := range fails {
+		if !sudoFailRe.MatchString(s) {
+			t.Errorf("sudoFailRe should match sudo failure %q", s)
+		}
+	}
+	ok := []string{
+		"-Arch x86_64",
+		"3-2 1050:0407 usbip-host /sys/devices/...",
+		"Linux karma 6.12.0",
+	}
+	for _, s := range ok {
+		if sudoFailRe.MatchString(s) {
+			t.Errorf("sudoFailRe should not match ordinary line %q", s)
+		}
+	}
+}
+
 // TestBootstrapHandshake runs the real bootstrap line under /bin/sh (in
 // place of ssh) with a tiny shell script as the "payload", verifying the
 // -Arch handshake, the size/args/payload framing and the exec.

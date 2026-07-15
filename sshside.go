@@ -9,9 +9,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // payloadFor is payloadBytes behind a var so tests can inject a payload.
@@ -22,6 +24,25 @@ var payloadFor = payloadBytes
 // the payload itself from stdin, and finally execs the payload — which
 // inherits the ssh channel as stdin/stdout.
 const bootstrap = `sh -c 'p=$(mktemp) && printf "%s\n" "-Arch $(uname -m)" && read -r n && read -r args && head -c "$n" >"$p" && chmod +x "$p" && exec "$p" remote "$args"'`
+
+// remoteBootstrap is the command ssh runs on HOST: the bootstrap line, wrapped
+// in "sudo -n --" when --sudo is set so the payload runs as root even when HOST
+// is a non-root user. With --sudo-prompt it is wrapped in "sudo -S -k" with an
+// empty prompt instead, reading the password (sent as the first stdin line)
+// from the ssh channel. The sudo forms are prefixed with LC_ALL=C so sudo's
+// failure messages come out in English and are reliably matched by sudoFailRe.
+// Only the payload is wrapped; the ssh control-master calls (-O forward/stop)
+// carry no remote command and are left untouched.
+func remoteBootstrap() string {
+	switch {
+	case sudoPrompt:
+		return "LC_ALL=C sudo -S -k -p '' -- " + bootstrap
+	case sudo:
+		return "LC_ALL=C sudo -n -- " + bootstrap
+	default:
+		return bootstrap
+	}
+}
 
 type remoteSession struct {
 	cmd *exec.Cmd
@@ -67,11 +88,52 @@ func copyOutput(line string) {
 	logf(pri, "    "+rest+"\n")
 }
 
-// startRemote spawns ssh (with sshArgs added) running the bootstrap on
-// host, performs the -Arch handshake and ships ra plus the payload.
+// errRemoteSudoAuth means the remote sudo rejected the password (or none was
+// available). With --sudo-prompt, startRemote turns this into a re-prompt.
+var errRemoteSudoAuth = errors.New("remote sudo authentication failed")
+
+// sudoFailRe matches the messages the remote sudo prints on a bad or missing
+// password (forced to English via LC_ALL=C in remoteBootstrap). Detecting it
+// lets us fail (and re-prompt) promptly instead of leaving sudo blocked on the
+// ssh channel waiting for a retry password.
+var sudoFailRe = regexp.MustCompile(`(?i)sorry, try again|incorrect password|no password was provided|a password is required|authentication failure`)
+
+// handshakeTimeout bounds the wait for the -Arch line. It is a backstop for the
+// case where a wrong --sudo-prompt password makes the remote sudo block on
+// stdin but its failure message was localized and missed by sudoFailRe.
+const handshakeTimeout = 45 * time.Second
+
+// maxSudoTries caps the interactive --sudo-prompt retries per connection.
+const maxSudoTries = 3
+
+// startRemote spawns the remote payload and returns its session. With
+// --sudo-prompt it re-prompts for the password when the remote reports an
+// authentication failure, so a mistyped password can be corrected in place;
+// the corrected password is reused by later connections (keep/reconnect).
 func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, error) {
+	for try := 0; ; try++ {
+		s, err := dialRemote(sshArgs, host, ra)
+		if err == nil {
+			return s, nil
+		}
+		if !errors.Is(err, errRemoteSudoAuth) || !sudoPrompt || try >= maxSudoTries-1 {
+			return nil, err
+		}
+		warnf("remote sudo authentication failed; try again")
+		pw, perr := readSudoPassword()
+		if perr != nil {
+			return nil, err // no terminal to re-prompt on: surface the auth error
+		}
+		sudoPass = pw
+	}
+}
+
+// dialRemote makes one connection attempt: runs the bootstrap on host, performs
+// the -Arch handshake and ships ra plus the payload. It returns
+// errRemoteSudoAuth when the remote sudo rejects the password.
+func dialRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, error) {
 	argv := append(append([]string{}, sshCmd...), sshArgs...)
-	argv = append(argv, host, bootstrap)
+	argv = append(argv, host, remoteBootstrap())
 	deb("EXEC %s", strings.Join(argv, " "))
 	cmd := exec.Command(argv[0], argv[1:]...)
 	in, err := cmd.StdinPipe()
@@ -97,11 +159,30 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 		}
 	}()
 	s := &remoteSession{cmd: cmd, in: in, pr: pr, out: bufio.NewScanner(pr)}
+	// Bound the handshake: a wrong sudo password leaves the remote sudo
+	// blocked reading stdin for a retry, which would otherwise hang us. The
+	// deadline is cleared once -Arch arrives so the session reads unbounded.
+	pr.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	if sudoPrompt {
+		// sudo -S reads the password from stdin up to a newline; send it
+		// first so sudo consumes it before the bootstrap reads the rest.
+		if _, err := io.WriteString(in, sudoPass+"\n"); err != nil {
+			s.kill()
+			cmd.Wait()
+			return nil, fmt.Errorf("sending sudo password: %w", err)
+		}
+	}
 	var chatter []string
 	for s.out.Scan() {
 		line := s.out.Text()
 		arch, ok := strings.CutPrefix(line, "-Arch ")
 		if !ok {
+			if (sudo || sudoPrompt) && sudoFailRe.MatchString(line) {
+				copyOutput(line)
+				s.kill()
+				cmd.Wait()
+				return nil, errRemoteSudoAuth
+			}
 			copyOutput(line)
 			if len(chatter) == 5 {
 				chatter = chatter[1:]
@@ -130,16 +211,30 @@ func startRemote(sshArgs []string, host string, ra remoteArgs) (*remoteSession, 
 			cmd.Wait()
 			return nil, fmt.Errorf("shipping payload: %w", err)
 		}
+		pr.SetReadDeadline(time.Time{})
 		handshake = true
 		return s, nil
 	}
-	if err := s.out.Err(); err != nil {
+	scanErr := s.out.Err()
+	if scanErr != nil {
 		s.kill()
-		cmd.Wait()
-		return nil, fmt.Errorf("reading remote output: %w", err)
 	}
 	cmd.Wait()
+	if errors.Is(scanErr, os.ErrDeadlineExceeded) {
+		// A stalled handshake under --sudo-prompt almost always means sudo is
+		// blocked on a password it did not accept: re-prompt rather than hang.
+		if sudoPrompt {
+			return nil, errRemoteSudoAuth
+		}
+		return nil, errors.New("timed out waiting for the remote -Arch handshake")
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("reading remote output: %w", scanErr)
+	}
 	msg := "remote bootstrap failed (no -Arch line)"
+	if sudoPrompt {
+		msg += " (remote sudo authentication may have failed)"
+	}
 	if len(chatter) > 0 {
 		msg += ":\n    " + strings.Join(chatter, "\n    ")
 	}

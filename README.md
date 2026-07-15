@@ -39,7 +39,10 @@ usbip-ssh unbind -r PATTERN              release a local exported device (no ssh
 
 Global flags (before the command): `-v`/`--verbose`; `--ssh 'ssh -p 2222 -J
 jump'` to choose the ssh command (like rsync's `-e`); `--sysfs PATH`;
-`--modprobe PATH`.
+`--modprobe PATH`; `--sudo` to run the remote payload under `sudo -n` so you
+can connect to HOST as a non-root user that has NOPASSWD sudo; `--sudo-prompt`
+like `--sudo` but prompts locally for the remote sudo password instead of
+requiring NOPASSWD.
 
 Attach flags (after the command): `-r`/`--reverse` exports a local device
 to HOST (see above); `--vhub` keeps monitoring for matching devices and

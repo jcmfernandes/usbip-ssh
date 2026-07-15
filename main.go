@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 type attachOpts struct {
@@ -47,6 +49,10 @@ global flags (before the command):
   --ssh 'ssh -p 2222'  ssh command to use (default "ssh")
   --sysfs PATH         sysfs mount point (default "/sys")
   --modprobe PATH      modprobe command (default "modprobe")
+  --sudo               run the remote payload under 'sudo -n' (needs NOPASSWD
+                       sudo on HOST; lets you connect as a non-root user)
+  --sudo-prompt        like --sudo, but prompt locally for the remote sudo
+                       password instead of requiring NOPASSWD
 
 attach/keep/daemon flags (after the command):
   -r, --reverse        export a local device to HOST (roles reversed)
@@ -103,6 +109,24 @@ func parseReverse(name string, args []string) (bool, []string) {
 	return reverse, fs.Args()
 }
 
+// readSudoPassword reads the remote sudo password from the controlling
+// terminal with echo disabled. It uses /dev/tty (not os.Stdin) so it works
+// even when stdin is redirected.
+func readSudoPassword() (string, error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return "", err
+	}
+	defer tty.Close()
+	fmt.Fprint(tty, "remote sudo password: ")
+	pw, err := term.ReadPassword(int(tty.Fd()))
+	fmt.Fprintln(tty)
+	if err != nil {
+		return "", err
+	}
+	return string(pw), nil
+}
+
 func main() {
 	gfs := flag.NewFlagSet(progName, flag.ExitOnError)
 	gfs.Usage = usage
@@ -112,6 +136,8 @@ func main() {
 	sshFlag := gfs.String("ssh", "ssh", "ssh command")
 	gfs.StringVar(&sysfs, "sysfs", "/sys", "sysfs mount point")
 	gfs.StringVar(&modprobe, "modprobe", "modprobe", "modprobe command")
+	gfs.BoolVar(&sudo, "sudo", false, "run the remote payload under sudo -n")
+	gfs.BoolVar(&sudoPrompt, "sudo-prompt", false, "run the remote payload under sudo, prompting locally for the password")
 	gfs.Parse(os.Args[1:])
 	if *showVersion {
 		fmt.Println(progName, version)
@@ -121,11 +147,25 @@ func main() {
 	if len(sshCmd) == 0 {
 		fatalf("empty --ssh command")
 	}
+	if sudo && sudoPrompt {
+		fatalf("use either --sudo or --sudo-prompt, not both")
+	}
 	args := gfs.Args()
 	if len(args) == 0 {
 		usage()
 	}
 	cmd, args := args[0], args[1:]
+	if sudoPrompt {
+		if cmd == "daemon" {
+			fatalf("--sudo-prompt cannot be used with daemon: it detaches from" +
+				" the terminal and cannot prompt; use --sudo with NOPASSWD instead")
+		}
+		pw, err := readSudoPassword()
+		if err != nil {
+			fatalf("--sudo-prompt needs a terminal to read the password: %v", err)
+		}
+		sudoPass = pw
+	}
 	switch cmd {
 	case "attach", "keep", "daemon":
 		host, pattern, o := parseAttachArgs(cmd, args)
