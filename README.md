@@ -37,20 +37,51 @@ usbip-ssh detach -r HOST BUSID...|all    tear down usbip devices on HOST
 usbip-ssh unbind -r PATTERN              release a local exported device (no ssh)
 ```
 
-Global flags (before the command): `-v`/`--verbose`; `--ssh 'ssh -p 2222 -J
-jump'` to choose the ssh command (like rsync's `-e`); `--sysfs PATH`;
-`--modprobe PATH`; `--sudo` to run the remote payload under `sudo -n` so you
-can connect to HOST as a non-root user that has NOPASSWD sudo; `--sudo-prompt`
-like `--sudo` but prompts locally for the remote sudo password instead of
-requiring NOPASSWD; `--ssh-user USER` runs the ssh client as USER, so that
-under `sudo` ssh uses your config, agent and known_hosts rather than root's.
+### Global flags
 
-Attach flags (after the command): `-r`/`--reverse` exports a local device
-to HOST (see above); `--vhub` keeps monitoring for matching devices and
-hot-attaches them as they (re)appear — the pattern may then match several
-devices; `--no-unmount` skips unmounting filesystems backed by the device
-before exporting it; `--no-linger` makes the exporter side not wait around
-to rebind the device to its original driver when the connection drops.
+These go **before** the command:
+
+- `-v`, `--verbose` — debug output.
+- `--version` — print the version and exit.
+- `--ssh 'ssh -p 2222 -J jump'` — the ssh command to use, like rsync's `-e`
+  (default `ssh`).
+- `--sysfs PATH` — sysfs mount point (default `/sys`).
+- `--modprobe PATH` — modprobe command (default `modprobe`).
+- `--sudo` — run the remote payload under `sudo -n`, so you can connect to
+  HOST as a non-root user that has NOPASSWD sudo.
+- `--sudo-prompt` — like `--sudo`, but prompts locally for the remote sudo
+  password instead of requiring NOPASSWD. Cannot be combined with `--sudo`,
+  and cannot be used with `daemon`, which detaches from the terminal and so
+  has nowhere to prompt.
+- `--ssh-user USER` — run the ssh client as USER, so that under `sudo` ssh
+  uses your config, agent and known_hosts rather than root's. Needs to be
+  run as root itself.
+
+### Command flags
+
+These go **after** the command.
+
+`attach`, `keep` and `daemon`:
+
+- `-r`, `--reverse` — export a local device to HOST (see above).
+- `--vhub` — virtual hub mode: keep monitoring for matching devices and
+  hot-attach them as they (re)appear. The pattern may then match several
+  devices.
+- `--no-unmount` — skip unmounting filesystems backed by the device before
+  exporting it.
+- `--no-linger` — make the exporter side not wait around to rebind the
+  device to its original driver when the connection drops.
+
+`detach` and `unbind`:
+
+- `-r`, `--reverse` — reverse the roles (see above).
+
+`list`:
+
+- `--local` — list devices on this machine instead of on HOST. No HOST
+  argument is taken.
+
+### Patterns
 
 `PATTERN` is as printed by `list`: a busid like `3-3.1`, a `vid:pid` like
 `03f0:e111` (leading zeros optional), or a regexp matched against the
