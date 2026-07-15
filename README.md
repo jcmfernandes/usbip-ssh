@@ -15,6 +15,26 @@ key to `~root/.ssh/authorized_keys`).
 
 ## Usage
 
+Every invocation has the form:
+
+```
+usbip-ssh [global flags] COMMAND [command flags] ARGS...
+```
+
+The position matters: global flags (`-v`, `--ssh`, `--sudo`, ...) only work
+**before** the command, while command flags (`-r`, `--vhub`, `--local`, ...)
+only work **after** it. Flag parsing also stops at the first positional
+argument, so command flags must come before `HOST`/`PATTERN` as well:
+
+```
+usbip-ssh -v --sudo attach -r root@pi Telink   # correct
+usbip-ssh attach -r -v root@pi Telink          # wrong: -v is not an attach flag
+usbip-ssh -r attach root@pi Telink             # wrong: -r is not a global flag
+usbip-ssh attach root@pi -r Telink             # wrong: -r after HOST is a positional
+```
+
+The commands are:
+
 ```
 usbip-ssh attach HOST PATTERN     attach matching USB device from HOST
 usbip-ssh keep   HOST PATTERN     like attach, but reconnect forever with backoff
@@ -39,7 +59,7 @@ usbip-ssh unbind -r PATTERN              release a local exported device (no ssh
 
 ### Global flags
 
-These go **before** the command:
+These go **before** the command, and are rejected after it:
 
 - `-v`, `--verbose` — debug output.
 - `--version` — print the version and exit.
@@ -59,7 +79,7 @@ These go **before** the command:
 
 ### Command flags
 
-These go **after** the command.
+These go **after** the command but **before** its positional arguments.
 
 `attach`, `keep` and `daemon`:
 

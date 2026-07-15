@@ -24,7 +24,7 @@ type remoteArgs struct {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `usage: %[1]s [global flags] COMMAND ...
+	fmt.Fprintf(os.Stderr, `usage: %[1]s [global flags] COMMAND [command flags] ARGS...
 
   %[1]s attach HOST PATTERN     attach matching USB device from HOST
   %[1]s keep   HOST PATTERN     like attach, but reconnect forever with backoff
@@ -57,7 +57,7 @@ global flags (before the command):
                        ssh would otherwise use root's ~/.ssh; this makes it use
                        USER's config, agent and known_hosts
 
-attach/keep/daemon flags (after the command):
+attach/keep/daemon flags (after the command, before HOST/PATTERN):
   -r, --reverse        export a local device to HOST (roles reversed)
   --vhub               virtual hub mode: monitor for matching devices and
                        hot-attach them as they (re)appear; PATTERN may match
