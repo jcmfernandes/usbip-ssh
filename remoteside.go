@@ -22,6 +22,28 @@ type lingerSock struct {
 	busid string
 }
 
+// chownForSSHD hands path to the user that invoked us through sudo (--sudo /
+// --sudo-prompt), if any. The payload runs as root there, but the ssh forwards
+// into our temp dir are still made by sshd as the *login* user: it creates the
+// -R listen socket and connects to the -L target. Without this it cannot get
+// into our root-owned dir and the forward fails. Without sudo (a root login)
+// there is no SUDO_UID and this is a no-op.
+func chownForSSHD(path string) error {
+	su, sg := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
+	if su == "" || sg == "" {
+		return nil
+	}
+	uid, err := strconv.Atoi(su)
+	if err != nil {
+		return fmt.Errorf("SUDO_UID %q: %w", su, err)
+	}
+	gid, err := strconv.Atoi(sg)
+	if err != nil {
+		return fmt.Errorf("SUDO_GID %q: %w", sg, err)
+	}
+	return os.Chown(path, uid, gid)
+}
+
 // remoteTmpdir is the socket directory created by remoteScript, if any; it
 // must be removed on every exit path (oneshot -Eof, linger handoff, or a
 // fatal error), not just the happy oneshot path.
@@ -85,10 +107,16 @@ func remoteScript(ra remoteArgs) {
 		remoteFatalf("%s", err)
 	}
 	remoteTmpdir = tmpdir
+	if err := chownForSSHD(tmpdir); err != nil {
+		remoteFatalf("%s", err)
+	}
 	rpath := tmpdir + "/host"
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: rpath, Net: "unix"})
 	if err != nil {
 		remoteFatalf("listen on %s: %s", rpath, err)
+	}
+	if err := chownForSSHD(rpath); err != nil {
+		remoteFatalf("%s", err)
 	}
 	fmt.Printf("-Socket %s\n", rpath)
 
@@ -153,6 +181,9 @@ func remoteImport(ra remoteArgs) {
 		remoteFatalf("%s", err)
 	}
 	remoteTmpdir = tmpdir
+	if err := chownForSSHD(tmpdir); err != nil {
+		remoteFatalf("%s", err)
+	}
 	rpath := tmpdir + "/imp"
 	fmt.Printf("-Socket %s\n", rpath)
 
