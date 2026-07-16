@@ -83,6 +83,10 @@ func remoteMain(jsonArg string) {
 		if err := unbindMatching(mustPattern(ra.Pattern)); err != nil {
 			fatalf("%s", err)
 		}
+	case "reset":
+		if err := resetMatching(mustPattern(ra.Pattern)); err != nil {
+			fatalf("%s", err)
+		}
 	case "attach":
 		remoteScript(ra)
 	case "import":

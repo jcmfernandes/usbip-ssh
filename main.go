@@ -33,6 +33,7 @@ func usage() {
   %[1]s list --local [PATTERN]  list USB devices on this machine
   %[1]s detach BUSID...|all     detach locally attached usbip devices
   %[1]s unbind HOST PATTERN     release a device on HOST back to its normal driver
+  %[1]s reset  HOST PATTERN     reset matching USB devices on HOST
 
 reverse mode (-r/--reverse) exports a local device to HOST instead; HOST is
 the importer and PATTERN matches local devices:
@@ -42,6 +43,7 @@ the importer and PATTERN matches local devices:
   %[1]s daemon -r HOST PATTERN  like keep -r, but detached, using syslog
   %[1]s detach -r HOST BUSID...|all  tear down usbip devices on HOST
   %[1]s unbind -r PATTERN       release a local exported device (no ssh)
+  %[1]s reset  -r PATTERN       reset matching local USB devices (no ssh)
 
 global flags (before the command):
   -v, --verbose        debug output
@@ -247,6 +249,23 @@ func main() {
 		}
 		os.Exit(remoteSimple(rest[0],
 			remoteArgs{Op: "unbind", Pattern: rest[1], Verbose: verbose}))
+	case "reset":
+		reverse, rest := parseReverse(cmd, args)
+		if reverse {
+			// reset -r PATTERN: reset local devices, no ssh
+			if len(rest) != 1 {
+				usage()
+			}
+			if err := resetMatching(mustPattern(rest[0])); err != nil {
+				fatalf("%s", err)
+			}
+		} else {
+			if len(rest) != 2 {
+				usage()
+			}
+			os.Exit(remoteSimple(rest[0],
+				remoteArgs{Op: "reset", Pattern: rest[1], Verbose: verbose}))
+		}
 	case "remote": // internal: payload side, args[0] is the JSON argument line
 		if len(args) != 1 {
 			usage()
