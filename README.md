@@ -43,6 +43,7 @@ usbip-ssh list   HOST [PATTERN]   list USB devices on HOST
 usbip-ssh list --local [PATTERN]  list USB devices on this machine
 usbip-ssh detach BUSID...|all     detach locally attached usbip devices
 usbip-ssh unbind HOST PATTERN     release a device on HOST back to its normal driver
+usbip-ssh reset  HOST PATTERN     reset matching USB devices on HOST
 ```
 
 The `-r`/`--reverse` flag runs any of these in reverse — exporting a
@@ -55,6 +56,7 @@ usbip-ssh keep   -r HOST PATTERN         like attach -r, but reconnect forever
 usbip-ssh daemon -r HOST PATTERN         like keep -r, but detached, using syslog
 usbip-ssh detach -r HOST BUSID...|all    tear down usbip devices on HOST
 usbip-ssh unbind -r PATTERN              release a local exported device (no ssh)
+usbip-ssh reset  -r PATTERN              reset matching local USB devices (no ssh)
 ```
 
 ### Global flags
@@ -92,7 +94,7 @@ These go **after** the command but **before** its positional arguments.
 - `--no-linger` — make the exporter side not wait around to rebind the
   device to its original driver when the connection drops.
 
-`detach` and `unbind`:
+`detach`, `unbind` and `reset`:
 
 - `-r`, `--reverse` — reverse the roles (see above).
 
